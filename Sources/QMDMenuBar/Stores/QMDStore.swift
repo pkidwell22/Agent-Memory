@@ -1,0 +1,162 @@
+import AppKit
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class QMDStore {
+    var qmdBinaryPath: String {
+        didSet { defaults.set(qmdBinaryPath, forKey: Keys.qmdBinaryPath) }
+    }
+
+    var memoryRoot: String {
+        didSet { defaults.set(memoryRoot, forKey: Keys.memoryRoot) }
+    }
+
+    var collectionName: String {
+        didSet { defaults.set(collectionName, forKey: Keys.collectionName) }
+    }
+
+    var indexName: String {
+        didSet { defaults.set(indexName, forKey: Keys.indexName) }
+    }
+
+    var fileMask: String {
+        didSet { defaults.set(fileMask, forKey: Keys.fileMask) }
+    }
+
+    var automaticUpdatesEnabled: Bool {
+        didSet {
+            defaults.set(automaticUpdatesEnabled, forKey: Keys.automaticUpdatesEnabled)
+            configureAutomaticTimer()
+        }
+    }
+
+    var automaticUpdateMinutes: Int {
+        didSet {
+            defaults.set(automaticUpdateMinutes, forKey: Keys.automaticUpdateMinutes)
+            configureAutomaticTimer()
+        }
+    }
+
+    var status = QMDStatus()
+    var lastResult: QMDRunResult?
+    var lastError: String?
+    var activeCommand: QMDCommand?
+    var isRefreshingStatus = false
+
+    private let defaults: UserDefaults
+    private var automaticTask: Task<Void, Never>?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let fallback = QMDPreferences.defaults
+        qmdBinaryPath = defaults.string(forKey: Keys.qmdBinaryPath) ?? fallback.qmdBinaryPath
+        memoryRoot = defaults.string(forKey: Keys.memoryRoot) ?? fallback.memoryRoot
+        collectionName = defaults.string(forKey: Keys.collectionName) ?? fallback.collectionName
+        indexName = defaults.string(forKey: Keys.indexName) ?? fallback.indexName
+        fileMask = defaults.string(forKey: Keys.fileMask) ?? fallback.fileMask
+        automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
+        let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)
+        automaticUpdateMinutes = savedMinutes > 0 ? savedMinutes : fallback.automaticUpdateMinutes
+
+        configureAutomaticTimer()
+        Task { await refreshStatus() }
+    }
+
+    var preferences: QMDPreferences {
+        var preferences = QMDPreferences.defaults
+        preferences.qmdBinaryPath = qmdBinaryPath
+        preferences.memoryRoot = memoryRoot
+        preferences.collectionName = collectionName
+        preferences.indexName = indexName
+        preferences.fileMask = fileMask
+        preferences.automaticUpdatesEnabled = automaticUpdatesEnabled
+        preferences.automaticUpdateMinutes = automaticUpdateMinutes
+        return preferences
+    }
+
+    var isRunning: Bool {
+        activeCommand != nil || isRefreshingStatus
+    }
+
+    var menuBarSystemImage: String {
+        if activeCommand != nil {
+            "arrow.triangle.2.circlepath"
+        } else if lastError != nil {
+            "exclamationmark.triangle"
+        } else {
+            "externaldrive.connected.to.line.below"
+        }
+    }
+
+    func refreshStatus() async {
+        guard !isRefreshingStatus else { return }
+        isRefreshingStatus = true
+        defer { isRefreshingStatus = false }
+
+        do {
+            status = try await QMDRunner(preferences: preferences).status()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func run(_ command: QMDCommand) {
+        guard activeCommand == nil else { return }
+        activeCommand = command
+        lastError = nil
+
+        Task {
+            do {
+                let result = try await QMDRunner(preferences: preferences).run(command: command)
+                lastResult = result
+                if result.succeeded {
+                    await refreshStatus()
+                } else {
+                    lastError = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+            activeCommand = nil
+        }
+    }
+
+    func openMemoryRoot() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: memoryRoot))
+    }
+
+    func openQMDCache() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "\(preferences.homeDirectory)/.cache/qmd"))
+    }
+
+    private func configureAutomaticTimer() {
+        automaticTask?.cancel()
+        guard automaticUpdatesEnabled else { return }
+
+        let seconds = max(5, automaticUpdateMinutes) * 60
+        automaticTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(seconds))
+                await self?.runAutomaticUpdate()
+            }
+        }
+    }
+
+    private func runAutomaticUpdate() async {
+        guard activeCommand == nil else { return }
+        run(.updateAndEmbed)
+    }
+
+    private enum Keys {
+        static let qmdBinaryPath = "qmdBinaryPath"
+        static let memoryRoot = "memoryRoot"
+        static let collectionName = "collectionName"
+        static let indexName = "indexName"
+        static let fileMask = "fileMask"
+        static let automaticUpdatesEnabled = "automaticUpdatesEnabled"
+        static let automaticUpdateMinutes = "automaticUpdateMinutes"
+    }
+}
