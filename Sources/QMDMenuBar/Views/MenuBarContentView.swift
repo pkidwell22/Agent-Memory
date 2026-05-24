@@ -36,6 +36,10 @@ struct MenuBarContentView: View {
 
             Divider()
 
+            LastRunView(result: store.lastResult)
+
+            Divider()
+
             FooterView(store: store, openSettings: openSettings)
         }
         .padding(14)
@@ -99,6 +103,50 @@ private struct CommandButton: View {
             }
         }
         .disabled(store.isRunning)
+    }
+}
+
+private struct LastRunView: View {
+    let result: QMDRunResult?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("Last Run", systemImage: "clock.badge.checkmark")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                if let result {
+                    Text(result.succeeded ? "OK" : "Failed")
+                        .font(.caption)
+                        .foregroundStyle(result.succeeded ? .green : .red)
+                }
+            }
+
+            if let result {
+                Text("\(result.actionTitle) at \(result.finishedAtText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("Duration \(result.durationText), exit \(result.exitCode)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !result.conciseOutput.isEmpty {
+                    Text(result.conciseOutput)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(result.succeeded ? Color.secondary : Color.red)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                }
+            } else {
+                Text("No QMD command has been recorded yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

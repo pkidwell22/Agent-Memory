@@ -41,6 +41,7 @@ final class QMDStore {
 
     var status = QMDStatus()
     var lastResult: QMDRunResult?
+    var runHistory: [QMDRunResult]
     var lastError: String?
     var activeCommand: QMDCommand?
     var isRefreshingStatus = false
@@ -59,6 +60,8 @@ final class QMDStore {
         automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
         let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)
         automaticUpdateMinutes = savedMinutes > 0 ? savedMinutes : fallback.automaticUpdateMinutes
+        runHistory = Self.loadRunHistory(from: defaults)
+        lastResult = runHistory.first
 
         configureAutomaticTimer()
         Task { await refreshStatus() }
@@ -111,17 +114,32 @@ final class QMDStore {
         Task {
             do {
                 let result = try await QMDRunner(preferences: preferences).run(command: command)
-                lastResult = result
+                record(result)
                 if result.succeeded {
                     await refreshStatus()
                 } else {
-                    lastError = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    lastError = result.conciseOutput
                 }
             } catch {
-                lastError = error.localizedDescription
+                let result = QMDRunResult(
+                    actionTitle: command.title,
+                    command: command.title,
+                    exitCode: -1,
+                    output: error.localizedDescription,
+                    startedAt: Date(),
+                    finishedAt: Date()
+                )
+                record(result)
+                lastError = result.conciseOutput
             }
             activeCommand = nil
         }
+    }
+
+    func clearRunHistory() {
+        runHistory = []
+        lastResult = nil
+        defaults.removeObject(forKey: Keys.runHistory)
     }
 
     func openMemoryRoot() {
@@ -150,6 +168,27 @@ final class QMDStore {
         run(.updateAndEmbed)
     }
 
+    private func record(_ result: QMDRunResult) {
+        lastResult = result
+        runHistory.insert(result, at: 0)
+        runHistory = Array(runHistory.prefix(20))
+        persistRunHistory()
+    }
+
+    private func persistRunHistory() {
+        guard let data = try? JSONEncoder().encode(runHistory) else { return }
+        defaults.set(data, forKey: Keys.runHistory)
+    }
+
+    private static func loadRunHistory(from defaults: UserDefaults) -> [QMDRunResult] {
+        guard let data = defaults.data(forKey: Keys.runHistory),
+              let history = try? JSONDecoder().decode([QMDRunResult].self, from: data) else {
+            return []
+        }
+
+        return history.sorted { $0.finishedAt > $1.finishedAt }
+    }
+
     private enum Keys {
         static let qmdBinaryPath = "qmdBinaryPath"
         static let memoryRoot = "memoryRoot"
@@ -158,5 +197,6 @@ final class QMDStore {
         static let fileMask = "fileMask"
         static let automaticUpdatesEnabled = "automaticUpdatesEnabled"
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
+        static let runHistory = "runHistory"
     }
 }

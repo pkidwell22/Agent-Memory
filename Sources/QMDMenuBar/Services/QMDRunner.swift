@@ -12,16 +12,24 @@ struct QMDRunner: Sendable {
         switch command {
         case .updateAndEmbed:
             let update = try await run(arguments: ["update"])
-            guard update.succeeded else { return update }
-            return try await run(arguments: ["embed", "--chunk-strategy", "auto"])
+            guard update.succeeded else { return update.labeled(command.title) }
+            let embed = try await run(arguments: ["embed", "--chunk-strategy", "auto"])
+            return QMDRunResult(
+                actionTitle: command.title,
+                command: "\(update.command) && \(embed.command)",
+                exitCode: embed.exitCode,
+                output: "Update:\n\(update.output)\n\nEmbed:\n\(embed.output)",
+                startedAt: update.startedAt,
+                finishedAt: embed.finishedAt
+            )
         case .updateIndex:
-            return try await run(arguments: ["update"])
+            return try await run(arguments: ["update"]).labeled(command.title)
         case .generateEmbeddings:
-            return try await run(arguments: ["embed", "--chunk-strategy", "auto"])
+            return try await run(arguments: ["embed", "--chunk-strategy", "auto"]).labeled(command.title)
         case .forceRebuildEmbeddings:
-            return try await run(arguments: ["embed", "-f", "--chunk-strategy", "auto"])
+            return try await run(arguments: ["embed", "-f", "--chunk-strategy", "auto"]).labeled(command.title)
         case .ensureCollection:
-            return try await ensureCollection()
+            return try await ensureCollection().labeled(command.title)
         }
     }
 
@@ -30,6 +38,7 @@ struct QMDRunner: Sendable {
         if list.output.contains("\n\(preferences.collectionName) (qmd://\(preferences.collectionName)/)") ||
             list.output.contains(" \(preferences.collectionName) (qmd://\(preferences.collectionName)/)") {
             return QMDRunResult(
+                actionTitle: "Ensure Collection",
                 command: list.command,
                 exitCode: 0,
                 output: "Collection '\(preferences.collectionName)' already exists.\n\n\(list.output)",
@@ -71,6 +80,7 @@ struct QMDRunner: Sendable {
                     process.waitUntilExit()
                     let output = String(data: data, encoding: .utf8) ?? ""
                     continuation.resume(returning: QMDRunResult(
+                        actionTitle: arguments.first ?? "QMD",
                         command: commandDescription(arguments: process.arguments ?? []),
                         exitCode: process.terminationStatus,
                         output: output,

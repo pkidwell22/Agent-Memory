@@ -18,6 +18,7 @@ Menu actions:
 - Force Rebuild
 - Ensure Collection
 - Automatic update + embed while the app is running
+- Persistent recent-run diagnostics with command time, duration, exit code, and QMD output summary
 
 Build and launch:
 
