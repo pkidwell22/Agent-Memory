@@ -63,8 +63,14 @@ private struct HeaderView: View {
                 Text(store.status.summary)
                     .foregroundStyle(.secondary)
 
+                if let checkedAt = store.lastStatusRefreshAt ?? store.lastResult?.finishedAt {
+                    Text("Checked \(DateFormatters.shortTime.string(from: checkedAt))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let updated = store.status.updated {
-                    Text("Updated \(updated)")
+                    Text("Newest indexed content \(updated)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -78,7 +84,7 @@ private struct HeaderView: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
-            .disabled(store.isRunning)
+            .disabled(store.isRefreshingStatus)
             .help("Refresh status")
         }
     }
@@ -102,7 +108,7 @@ private struct CommandButton: View {
                 }
             }
         }
-        .disabled(store.isRunning)
+        .disabled(store.isCommandRunning)
     }
 }
 

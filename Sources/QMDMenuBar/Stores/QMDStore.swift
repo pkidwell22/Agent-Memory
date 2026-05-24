@@ -45,6 +45,7 @@ final class QMDStore {
     var lastError: String?
     var activeCommand: QMDCommand?
     var isRefreshingStatus = false
+    var lastStatusRefreshAt: Date?
 
     private let defaults: UserDefaults
     private var automaticTask: Task<Void, Never>?
@@ -83,6 +84,10 @@ final class QMDStore {
         activeCommand != nil || isRefreshingStatus
     }
 
+    var isCommandRunning: Bool {
+        activeCommand != nil
+    }
+
     var menuBarSystemImage: String {
         if activeCommand != nil {
             "arrow.triangle.2.circlepath"
@@ -100,6 +105,7 @@ final class QMDStore {
 
         do {
             status = try await QMDRunner(preferences: preferences).status()
+            lastStatusRefreshAt = Date()
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -115,6 +121,7 @@ final class QMDStore {
             do {
                 let result = try await QMDRunner(preferences: preferences).run(command: command)
                 record(result)
+                activeCommand = nil
                 if result.succeeded {
                     await refreshStatus()
                 } else {
@@ -131,8 +138,8 @@ final class QMDStore {
                 )
                 record(result)
                 lastError = result.conciseOutput
+                activeCommand = nil
             }
-            activeCommand = nil
         }
     }
 
