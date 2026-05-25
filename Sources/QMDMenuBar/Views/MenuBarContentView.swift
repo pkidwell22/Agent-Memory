@@ -78,14 +78,9 @@ private struct HeaderView: View {
 
             Spacer()
 
-            Button {
+            HoverIconButton(systemImage: "arrow.clockwise", help: "Refresh status", disabled: store.isRefreshingStatus) {
                 Task { await store.refreshStatus() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
-            .disabled(store.isRefreshingStatus)
-            .help("Refresh status")
         }
     }
 }
@@ -96,7 +91,7 @@ private struct CommandButton: View {
     var role: ButtonRole?
 
     var body: some View {
-        Button(role: role) {
+        HoverRowButton(disabled: store.isCommandRunning) {
             store.run(command)
         } label: {
             HStack {
@@ -107,8 +102,8 @@ private struct CommandButton: View {
                         .controlSize(.small)
                 }
             }
+            .foregroundStyle(Color.primary)
         }
-        .disabled(store.isCommandRunning)
     }
 }
 
@@ -174,33 +169,125 @@ private struct FooterView: View {
             }
 
             HStack {
-                Button {
+                HoverIconButton(systemImage: "folder", help: "Open agent-memory") {
                     store.openMemoryRoot()
-                } label: {
-                    Image(systemName: "folder")
                 }
-                .help("Open agent-memory")
 
-                Button {
+                HoverIconButton(systemImage: "doc.text.magnifyingglass", help: "Open QMD cache") {
                     store.openQMDCache()
-                } label: {
-                    Image(systemName: "doc.text.magnifyingglass")
                 }
-                .help("Open QMD cache")
 
                 Spacer()
 
-                Button {
+                HoverTextButton(systemImage: "gearshape", title: "Settings") {
                     openSettings()
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
                 }
 
-                Button("Quit") {
+                HoverTextButton(title: "Quit") {
                     NSApp.terminate(nil)
                 }
-                .keyboardShortcut("q")
             }
         }
+    }
+}
+
+private struct HoverRowButton<LabelContent: View>: View {
+    var disabled = false
+    let action: () -> Void
+    @ViewBuilder let label: () -> LabelContent
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            label()
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(hoverBackground)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.08)) {
+                isHovered = hovering && !disabled
+            }
+        }
+    }
+
+    private var hoverBackground: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(isHovered ? Color.primary.opacity(0.10) : Color.clear)
+    }
+}
+
+private struct HoverIconButton: View {
+    let systemImage: String
+    var help: String?
+    var disabled = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 32, height: 28)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(hoverBackground)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .help(help ?? "")
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.08)) {
+                isHovered = hovering && !disabled
+            }
+        }
+    }
+
+    private var hoverBackground: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(isHovered ? Color.primary.opacity(0.10) : Color.clear)
+    }
+}
+
+private struct HoverTextButton: View {
+    var systemImage: String?
+    let title: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(title)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(hoverBackground)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.08)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var hoverBackground: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(isHovered ? Color.primary.opacity(0.10) : Color.clear)
     }
 }
