@@ -13,6 +13,7 @@ struct QMDPreferences: Sendable {
     var useGPU: Bool
     var automaticUpdatesEnabled: Bool
     var automaticUpdateMinutes: Int
+    var commandTimeoutSeconds: Int
 
     static var defaults: QMDPreferences {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -29,7 +30,8 @@ struct QMDPreferences: Sendable {
             npmCachePath: "/tmp/qmd-npm-cache",
             useGPU: false,
             automaticUpdatesEnabled: false,
-            automaticUpdateMinutes: 60
+            automaticUpdateMinutes: 60,
+            commandTimeoutSeconds: 180
         )
     }
 }

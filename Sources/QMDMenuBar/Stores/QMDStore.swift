@@ -44,6 +44,7 @@ final class QMDStore {
     var runHistory: [QMDRunResult]
     var lastError: String?
     var activeCommand: QMDCommand?
+    var activeCommandStartedAt: Date?
     var isRefreshingStatus = false
     var lastStatusRefreshAt: Date?
 
@@ -115,16 +116,17 @@ final class QMDStore {
     func run(_ command: QMDCommand) {
         guard activeCommand == nil else { return }
         activeCommand = command
+        activeCommandStartedAt = Date()
         lastError = nil
 
         Task {
+            var shouldRefresh = false
+
             do {
                 let result = try await QMDRunner(preferences: preferences).run(command: command)
                 record(result)
-                activeCommand = nil
-                if result.succeeded {
-                    await refreshStatus()
-                } else {
+                shouldRefresh = result.succeeded
+                if !result.succeeded {
                     lastError = result.conciseOutput
                 }
             } catch {
@@ -138,9 +140,31 @@ final class QMDStore {
                 )
                 record(result)
                 lastError = result.conciseOutput
-                activeCommand = nil
+            }
+
+            activeCommand = nil
+            activeCommandStartedAt = nil
+
+            if shouldRefresh {
+                await refreshStatus()
             }
         }
+    }
+
+    func resetActiveCommand() {
+        guard let command = activeCommand else { return }
+        let result = QMDRunResult(
+            actionTitle: command.title,
+            command: command.title,
+            exitCode: -2,
+            output: "Run state was reset manually because QMD was no longer making progress.",
+            startedAt: activeCommandStartedAt ?? Date(),
+            finishedAt: Date()
+        )
+        record(result)
+        activeCommand = nil
+        activeCommandStartedAt = nil
+        lastError = result.conciseOutput
     }
 
     func clearRunHistory() {

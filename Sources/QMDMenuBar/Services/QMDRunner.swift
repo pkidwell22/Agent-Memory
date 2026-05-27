@@ -1,5 +1,16 @@
 import Foundation
 
+enum QMDRunnerError: LocalizedError {
+    case timedOut(command: String, seconds: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case let .timedOut(command, seconds):
+            "QMD command timed out after \(seconds)s: \(command)"
+        }
+    }
+}
+
 struct QMDRunner: Sendable {
     let preferences: QMDPreferences
 
@@ -70,23 +81,39 @@ struct QMDRunner: Sendable {
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = outputPipe
+        let command = commandDescription(arguments: process.arguments ?? [])
+        let state = ProcessRunState()
 
         try process.run()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(preferences.commandTimeoutSeconds)) {
+                    state.finish {
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                        continuation.resume(throwing: QMDRunnerError.timedOut(
+                            command: command,
+                            seconds: preferences.commandTimeoutSeconds
+                        ))
+                    }
+                }
+
                 DispatchQueue.global(qos: .utility).async {
                     let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     process.waitUntilExit()
                     let output = String(data: data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: QMDRunResult(
-                        actionTitle: arguments.first ?? "QMD",
-                        command: commandDescription(arguments: process.arguments ?? []),
-                        exitCode: process.terminationStatus,
-                        output: output,
-                        startedAt: startedAt,
-                        finishedAt: Date()
-                    ))
+                    state.finish {
+                        continuation.resume(returning: QMDRunResult(
+                            actionTitle: arguments.first ?? "QMD",
+                            command: command,
+                            exitCode: process.terminationStatus,
+                            output: output,
+                            startedAt: startedAt,
+                            finishedAt: Date()
+                        ))
+                    }
                 }
             }
         } onCancel: {
@@ -107,5 +134,22 @@ struct QMDRunner: Sendable {
 
     private func commandDescription(arguments: [String]) -> String {
         ([preferences.qmdBinaryPath] + arguments).joined(separator: " ")
+    }
+}
+
+private final class ProcessRunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didFinish = false
+
+    func finish(_ body: () -> Void) {
+        lock.lock()
+        guard !didFinish else {
+            lock.unlock()
+            return
+        }
+
+        didFinish = true
+        lock.unlock()
+        body()
     }
 }

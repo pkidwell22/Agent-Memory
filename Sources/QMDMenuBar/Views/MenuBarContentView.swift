@@ -36,7 +36,7 @@ struct MenuBarContentView: View {
 
             Divider()
 
-            LastRunView(result: store.lastResult)
+            RunStateView(store: store)
 
             Divider()
 
@@ -107,26 +107,43 @@ private struct CommandButton: View {
     }
 }
 
-private struct LastRunView: View {
-    let result: QMDRunResult?
+private struct RunStateView: View {
+    let store: QMDStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Label("Last Run", systemImage: "clock.badge.checkmark")
+                Label(store.activeCommand == nil ? "Last Run" : "Running", systemImage: "clock.badge.checkmark")
                     .font(.subheadline)
                     .fontWeight(.semibold)
 
                 Spacer()
 
-                if let result {
+                if let activeCommand = store.activeCommand {
+                    Text(activeCommand.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let result = store.lastResult {
                     Text(result.succeeded ? "OK" : "Failed")
                         .font(.caption)
                         .foregroundStyle(result.succeeded ? .green : .red)
                 }
             }
 
-            if let result {
+            if let activeCommand = store.activeCommand {
+                Text("\(activeCommand.title) started \(DateFormatters.shortTime.string(from: store.activeCommandStartedAt ?? Date()))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    store.resetActiveCommand()
+                } label: {
+                    Label("Reset Stuck Run", systemImage: "stop.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+            } else if let result = store.lastResult {
                 Text("\(result.actionTitle) at \(result.finishedAtText)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
