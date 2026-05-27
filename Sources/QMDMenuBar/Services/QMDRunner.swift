@@ -15,16 +15,16 @@ struct QMDRunner: Sendable {
     let preferences: QMDPreferences
 
     func status() async throws -> QMDStatus {
-        let result = try await run(arguments: ["status"])
+        let result = try await runWithLockRetry(arguments: ["status"])
         return QMDStatus.parse(result.output, collectionName: preferences.collectionName)
     }
 
     func run(command: QMDCommand) async throws -> QMDRunResult {
         switch command {
         case .updateAndEmbed:
-            let update = try await run(arguments: ["update"])
+            let update = try await runWithLockRetry(arguments: ["update"])
             guard update.succeeded else { return update.labeled(command.title) }
-            let embed = try await run(arguments: ["embed", "--chunk-strategy", "auto"])
+            let embed = try await runWithLockRetry(arguments: ["embed", "--chunk-strategy", "auto"])
             return QMDRunResult(
                 actionTitle: command.title,
                 command: "\(update.command) && \(embed.command)",
@@ -34,18 +34,18 @@ struct QMDRunner: Sendable {
                 finishedAt: embed.finishedAt
             )
         case .updateIndex:
-            return try await run(arguments: ["update"]).labeled(command.title)
+            return try await runWithLockRetry(arguments: ["update"]).labeled(command.title)
         case .generateEmbeddings:
-            return try await run(arguments: ["embed", "--chunk-strategy", "auto"]).labeled(command.title)
+            return try await runWithLockRetry(arguments: ["embed", "--chunk-strategy", "auto"]).labeled(command.title)
         case .forceRebuildEmbeddings:
-            return try await run(arguments: ["embed", "-f", "--chunk-strategy", "auto"]).labeled(command.title)
+            return try await runWithLockRetry(arguments: ["embed", "-f", "--chunk-strategy", "auto"]).labeled(command.title)
         case .ensureCollection:
             return try await ensureCollection().labeled(command.title)
         }
     }
 
     private func ensureCollection() async throws -> QMDRunResult {
-        let list = try await run(arguments: ["collection", "list"])
+        let list = try await runWithLockRetry(arguments: ["collection", "list"])
         if list.output.contains("\n\(preferences.collectionName) (qmd://\(preferences.collectionName)/)") ||
             list.output.contains(" \(preferences.collectionName) (qmd://\(preferences.collectionName)/)") {
             return QMDRunResult(
@@ -58,7 +58,7 @@ struct QMDRunner: Sendable {
             )
         }
 
-        return try await run(arguments: [
+        return try await runWithLockRetry(arguments: [
             "collection",
             "add",
             preferences.memoryRoot,
@@ -67,6 +67,36 @@ struct QMDRunner: Sendable {
             "--pattern",
             preferences.fileMask
         ])
+    }
+
+    private func runWithLockRetry(arguments: [String]) async throws -> QMDRunResult {
+        var lastResult: QMDRunResult?
+
+        for attempt in 1...4 {
+            let result = try await run(arguments: arguments)
+            if !isDatabaseLocked(result.output) {
+                return result
+            }
+
+            lastResult = result
+            if attempt < 4 {
+                try await Task.sleep(for: .seconds(attempt * 2))
+            }
+        }
+
+        return lastResult ?? QMDRunResult(
+            actionTitle: arguments.first ?? "QMD",
+            command: arguments.joined(separator: " "),
+            exitCode: 1,
+            output: "QMD database stayed locked after retries.",
+            startedAt: Date(),
+            finishedAt: Date()
+        )
+    }
+
+    private func isDatabaseLocked(_ output: String) -> Bool {
+        output.localizedCaseInsensitiveContains("database is locked") ||
+            output.localizedCaseInsensitiveContains("SQLITE_BUSY")
     }
 
     @discardableResult
@@ -83,13 +113,18 @@ struct QMDRunner: Sendable {
         process.standardError = outputPipe
         let command = commandDescription(arguments: process.arguments ?? [])
         let state = ProcessRunState()
-
-        try process.run()
+        let output = ProcessOutputBuffer()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            output.append(data)
+        }
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(preferences.commandTimeoutSeconds)) {
                     state.finish {
+                        outputPipe.fileHandleForReading.readabilityHandler = nil
                         if process.isRunning {
                             process.terminate()
                         }
@@ -100,23 +135,31 @@ struct QMDRunner: Sendable {
                     }
                 }
 
-                DispatchQueue.global(qos: .utility).async {
-                    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    let output = String(data: data, encoding: .utf8) ?? ""
+                process.terminationHandler = { terminatedProcess in
                     state.finish {
+                        outputPipe.fileHandleForReading.readabilityHandler = nil
                         continuation.resume(returning: QMDRunResult(
                             actionTitle: arguments.first ?? "QMD",
                             command: command,
-                            exitCode: process.terminationStatus,
-                            output: output,
+                            exitCode: terminatedProcess.terminationStatus,
+                            output: output.string,
                             startedAt: startedAt,
                             finishedAt: Date()
                         ))
                     }
                 }
+
+                do {
+                    try process.run()
+                } catch {
+                    state.finish {
+                        outputPipe.fileHandleForReading.readabilityHandler = nil
+                        continuation.resume(throwing: error)
+                    }
+                }
             }
         } onCancel: {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
             if process.isRunning {
                 process.terminate()
             }
@@ -134,6 +177,24 @@ struct QMDRunner: Sendable {
 
     private func commandDescription(arguments: [String]) -> String {
         ([preferences.qmdBinaryPath] + arguments).joined(separator: " ")
+    }
+}
+
+private final class ProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    var string: String {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+
+    func append(_ newData: Data) {
+        lock.lock()
+        data.append(newData)
+        lock.unlock()
     }
 }
 

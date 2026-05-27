@@ -50,6 +50,7 @@ final class QMDStore {
 
     private let defaults: UserDefaults
     private var automaticTask: Task<Void, Never>?
+    private var commandWatchdogTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -118,6 +119,7 @@ final class QMDStore {
         activeCommand = command
         activeCommandStartedAt = Date()
         lastError = nil
+        startCommandWatchdog(for: command)
 
         Task {
             var shouldRefresh = false
@@ -144,6 +146,8 @@ final class QMDStore {
 
             activeCommand = nil
             activeCommandStartedAt = nil
+            commandWatchdogTask?.cancel()
+            commandWatchdogTask = nil
 
             if shouldRefresh {
                 await refreshStatus()
@@ -164,6 +168,8 @@ final class QMDStore {
         record(result)
         activeCommand = nil
         activeCommandStartedAt = nil
+        commandWatchdogTask?.cancel()
+        commandWatchdogTask = nil
         lastError = result.conciseOutput
     }
 
@@ -197,6 +203,32 @@ final class QMDStore {
     private func runAutomaticUpdate() async {
         guard activeCommand == nil else { return }
         run(.updateAndEmbed)
+    }
+
+    private func startCommandWatchdog(for command: QMDCommand) {
+        commandWatchdogTask?.cancel()
+        let timeout = UInt64(QMDPreferences.defaults.commandTimeoutSeconds + 15)
+
+        commandWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Int(timeout)))
+            self?.expireStuckCommand(command)
+        }
+    }
+
+    private func expireStuckCommand(_ command: QMDCommand) {
+        guard activeCommand == command else { return }
+        let result = QMDRunResult(
+            actionTitle: command.title,
+            command: command.title,
+            exitCode: -3,
+            output: "Run state expired automatically because QMD did not finish within the app watchdog window.",
+            startedAt: activeCommandStartedAt ?? Date(),
+            finishedAt: Date()
+        )
+        record(result)
+        activeCommand = nil
+        activeCommandStartedAt = nil
+        lastError = result.conciseOutput
     }
 
     private func record(_ result: QMDRunResult) {
