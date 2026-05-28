@@ -99,9 +99,14 @@ private struct CommandButton: View {
                 Spacer()
                 if store.activeCommand == command {
                     ProgressView()
+                        .progressViewStyle(.circular)
                         .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                        .fixedSize()
+                        .clipped()
                 }
             }
+            .frame(height: 26)
             .foregroundStyle(Color.primary)
         }
     }
