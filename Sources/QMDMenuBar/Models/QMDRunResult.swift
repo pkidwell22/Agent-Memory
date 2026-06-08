@@ -8,6 +8,18 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
     let output: String
     let startedAt: Date
     let finishedAt: Date
+    let trigger: QMDRunTrigger
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case actionTitle
+        case command
+        case exitCode
+        case output
+        case startedAt
+        case finishedAt
+        case trigger
+    }
 
     var succeeded: Bool {
         exitCode == 0
@@ -28,6 +40,15 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
         DateFormatters.timestamp.string(from: finishedAt)
     }
 
+    var displayTitle: String {
+        switch trigger {
+        case .manual:
+            actionTitle
+        case .automatic:
+            "\(actionTitle) (Automatic)"
+        }
+    }
+
     var conciseOutput: String {
         let lines = output
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -40,6 +61,7 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
                 line.contains("All content hashes") ||
                 line.contains("already have embeddings") ||
                 line.contains("database is locked") ||
+                line.contains("temporarily refused to spawn") ||
                 line.contains("SQLiteError")
         }
 
@@ -54,7 +76,8 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
         exitCode: Int32,
         output: String,
         startedAt: Date,
-        finishedAt: Date
+        finishedAt: Date,
+        trigger: QMDRunTrigger = .manual
     ) {
         self.id = id
         self.actionTitle = actionTitle
@@ -63,6 +86,20 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
         self.output = output
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.trigger = trigger
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        actionTitle = try container.decode(String.self, forKey: .actionTitle)
+        command = try container.decode(String.self, forKey: .command)
+        exitCode = try container.decode(Int32.self, forKey: .exitCode)
+        output = try container.decode(String.self, forKey: .output)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        finishedAt = try container.decode(Date.self, forKey: .finishedAt)
+        trigger = try container.decodeIfPresent(QMDRunTrigger.self, forKey: .trigger) ?? .manual
     }
 
     func labeled(_ actionTitle: String) -> QMDRunResult {
@@ -73,7 +110,26 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
             exitCode: exitCode,
             output: output,
             startedAt: startedAt,
-            finishedAt: finishedAt
+            finishedAt: finishedAt,
+            trigger: trigger
         )
     }
+
+    func triggeredBy(_ trigger: QMDRunTrigger) -> QMDRunResult {
+        QMDRunResult(
+            id: id,
+            actionTitle: actionTitle,
+            command: command,
+            exitCode: exitCode,
+            output: output,
+            startedAt: startedAt,
+            finishedAt: finishedAt,
+            trigger: trigger
+        )
+    }
+}
+
+enum QMDRunTrigger: String, Codable, Sendable {
+    case manual
+    case automatic
 }

@@ -49,7 +49,7 @@ private struct DiagnosticsSection: View {
             LabeledContent("Last checked", value: store.lastStatusRefreshAt.map(DateFormatters.timestamp.string(from:)) ?? "Never")
             LabeledContent("Newest indexed content", value: store.status.updated ?? "Unknown")
             LabeledContent("Last error", value: store.lastError ?? "None")
-            LabeledContent("Last command", value: store.lastResult?.actionTitle ?? "None")
+            LabeledContent("Last command", value: store.lastResult?.displayTitle ?? "None")
             LabeledContent("Last run", value: store.lastResult?.finishedAtText ?? "Never")
             LabeledContent("Last duration", value: store.lastResult?.durationText ?? "Unknown")
 
@@ -92,7 +92,7 @@ private struct RecentRunRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label(result.actionTitle, systemImage: result.succeeded ? "checkmark.circle" : "xmark.octagon")
+                Label(result.displayTitle, systemImage: result.succeeded ? "checkmark.circle" : "xmark.octagon")
                     .foregroundStyle(result.succeeded ? Color.green : Color.red)
                 Spacer()
                 Text(result.durationText)
