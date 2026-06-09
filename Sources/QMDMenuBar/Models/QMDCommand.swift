@@ -33,7 +33,7 @@ enum QMDCommand: CaseIterable, Identifiable {
         case .forceRebuildEmbeddings:
             "Force Rebuild"
         case .ensureCollection:
-            "Ensure Collection"
+            "Ensure Collections"
         }
     }
 

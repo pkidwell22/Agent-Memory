@@ -7,8 +7,8 @@ struct SettingsView: View {
         Form {
             Section("QMD") {
                 TextField("Binary path", text: $store.qmdBinaryPath)
-                TextField("Index name", text: $store.indexName)
-                TextField("Collection name", text: $store.collectionName)
+                LabeledContent("Index", value: "Default QMD index")
+                LabeledContent("Collections", value: "iCloud agent-memory directories")
                 TextField("File mask", text: $store.fileMask)
             }
 

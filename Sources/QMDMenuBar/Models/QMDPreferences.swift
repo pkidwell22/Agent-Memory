@@ -21,8 +21,8 @@ struct QMDPreferences: Sendable {
         return QMDPreferences(
             qmdBinaryPath: "\(home)/qmd/bin/qmd",
             memoryRoot: "\(home)/Library/Mobile Documents/com~apple~CloudDocs/agent-memory",
-            collectionName: "agent-memory",
-            indexName: "obsidian-agent-memory",
+            collectionName: "agent-memory-root",
+            indexName: "",
             fileMask: "**/*.md",
             workingDirectory: "\(home)/qmd",
             homeDirectory: home,

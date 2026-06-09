@@ -37,11 +37,18 @@ struct QMDStatus: Sendable {
             } else if trimmed.hasPrefix("Updated:") {
                 status.updated = trimmed.replacingOccurrences(of: "Updated:", with: "")
                     .trimmingCharacters(in: .whitespaces)
-            } else if trimmed.hasSuffix("(qmd://\(preferredCollection)/)") {
-                activeCollection = preferredCollection
-                status.collectionName = preferredCollection
-            } else if trimmed.hasPrefix("Files:"), activeCollection == preferredCollection {
-                status.collectionFiles = firstInteger(in: trimmed)
+            } else if trimmed.contains("(qmd://"), trimmed.hasSuffix("/)") {
+                activeCollection = trimmed.components(separatedBy: " ").first
+                if activeCollection == preferredCollection {
+                    status.collectionName = preferredCollection
+                }
+            } else if trimmed.hasPrefix("Files:"), let active = activeCollection {
+                if let files = firstInteger(in: trimmed) {
+                    status.collectionFiles = (status.collectionFiles ?? 0) + files
+                    if active == preferredCollection {
+                        status.collectionName = preferredCollection
+                    }
+                }
                 activeCollection = nil
             }
         }

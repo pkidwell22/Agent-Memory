@@ -57,8 +57,17 @@ final class QMDStore {
         let fallback = QMDPreferences.defaults
         qmdBinaryPath = defaults.string(forKey: Keys.qmdBinaryPath) ?? fallback.qmdBinaryPath
         memoryRoot = defaults.string(forKey: Keys.memoryRoot) ?? fallback.memoryRoot
+        if defaults.string(forKey: Keys.collectionName) == "agent-memory" {
+            defaults.removeObject(forKey: Keys.collectionName)
+        }
         collectionName = defaults.string(forKey: Keys.collectionName) ?? fallback.collectionName
-        indexName = defaults.string(forKey: Keys.indexName) ?? fallback.indexName
+        let savedIndexName = defaults.string(forKey: Keys.indexName)
+        if savedIndexName == "obsidian-agent-memory" {
+            defaults.removeObject(forKey: Keys.indexName)
+            indexName = fallback.indexName
+        } else {
+            indexName = savedIndexName ?? fallback.indexName
+        }
         fileMask = defaults.string(forKey: Keys.fileMask) ?? fallback.fileMask
         automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
         let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)

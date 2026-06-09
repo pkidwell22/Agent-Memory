@@ -40,33 +40,98 @@ struct QMDRunner: Sendable {
         case .forceRebuildEmbeddings:
             return try await runWithLockRetry(arguments: ["embed", "-f", "--chunk-strategy", "auto"]).labeled(command.title)
         case .ensureCollection:
-            return try await ensureCollection().labeled(command.title)
+            return try await ensureAgentMemoryCollections().labeled(command.title)
         }
     }
 
-    private func ensureCollection() async throws -> QMDRunResult {
+    private func ensureAgentMemoryCollections() async throws -> QMDRunResult {
         let list = try await runWithLockRetry(arguments: ["collection", "list"])
-        if list.output.contains("\n\(preferences.collectionName) (qmd://\(preferences.collectionName)/)") ||
-            list.output.contains(" \(preferences.collectionName) (qmd://\(preferences.collectionName)/)") {
+        let desiredCollections = try agentMemoryCollections()
+        let missingCollections = desiredCollections.filter { !collectionExists($0.name, in: list.output) }
+
+        if missingCollections.isEmpty {
             return QMDRunResult(
-                actionTitle: "Ensure Collection",
+                actionTitle: "Ensure Collections",
                 command: list.command,
                 exitCode: 0,
-                output: "Collection '\(preferences.collectionName)' already exists.\n\n\(list.output)",
+                output: "All agent-memory collections already exist.\n\n\(list.output)",
                 startedAt: list.startedAt,
                 finishedAt: list.finishedAt
             )
         }
 
-        return try await runWithLockRetry(arguments: [
-            "collection",
-            "add",
-            preferences.memoryRoot,
-            "--name",
-            preferences.collectionName,
-            "--pattern",
-            preferences.fileMask
-        ])
+        var outputs = ["Existing collections:\n\(list.output)"]
+        var commands = [list.command]
+        var lastResult = list
+
+        for collection in missingCollections {
+            let result = try await runWithLockRetry(arguments: [
+                "collection",
+                "add",
+                collection.path,
+                "--name",
+                collection.name,
+                "--pattern",
+                collection.pattern
+            ])
+            lastResult = result
+            commands.append(result.command)
+            outputs.append("Added/ensured \(collection.name):\n\(result.output)")
+
+            if !result.succeeded {
+                break
+            }
+        }
+
+        return QMDRunResult(
+            actionTitle: "Ensure Agent-Memory Collections",
+            command: commands.joined(separator: " && "),
+            exitCode: lastResult.exitCode,
+            output: outputs.joined(separator: "\n\n"),
+            startedAt: list.startedAt,
+            finishedAt: lastResult.finishedAt
+        )
+    }
+
+    private func collectionExists(_ name: String, in collectionList: String) -> Bool {
+        collectionList.split(separator: "\n").contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            return line == "\(name) (qmd://\(name)/)"
+        }
+    }
+
+    private func agentMemoryCollections() throws -> [AgentMemoryCollection] {
+        let rootURL = URL(fileURLWithPath: preferences.memoryRoot)
+        let directoryURLs = try FileManager.default.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        let folders = try directoryURLs.filter { url in
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+            return values.isDirectory == true
+        }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+        return [
+            AgentMemoryCollection(
+                name: "agent-memory-root",
+                path: preferences.memoryRoot,
+                pattern: "*.md"
+            )
+        ] + folders.map { folder in
+            AgentMemoryCollection(
+                name: canonicalCollectionName(for: folder.lastPathComponent),
+                path: folder.path,
+                pattern: preferences.fileMask
+            )
+        }
+    }
+
+    private func canonicalCollectionName(for folderName: String) -> String {
+        folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "-")
     }
 
     private func runWithLockRetry(arguments: [String]) async throws -> QMDRunResult {
@@ -104,7 +169,8 @@ struct QMDRunner: Sendable {
         let startedAt = Date()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: preferences.qmdBinaryPath)
-        process.arguments = ["--index", preferences.indexName] + arguments
+        let indexName = preferences.indexName.trimmingCharacters(in: .whitespacesAndNewlines)
+        process.arguments = indexName.isEmpty ? arguments : ["--index", indexName] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: preferences.workingDirectory)
         process.environment = environment()
 
@@ -178,6 +244,12 @@ struct QMDRunner: Sendable {
     private func commandDescription(arguments: [String]) -> String {
         ([preferences.qmdBinaryPath] + arguments).joined(separator: " ")
     }
+}
+
+private struct AgentMemoryCollection: Sendable {
+    let name: String
+    let path: String
+    let pattern: String
 }
 
 private final class ProcessOutputBuffer: @unchecked Sendable {
