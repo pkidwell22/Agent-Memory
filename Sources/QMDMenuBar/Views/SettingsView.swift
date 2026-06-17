@@ -23,6 +23,7 @@ struct SettingsView: View {
             }
 
             Section("Automatic Updates") {
+                Toggle("Use GPU acceleration", isOn: $store.useGPU)
                 Toggle("Enable automatic update + embed", isOn: $store.automaticUpdatesEnabled)
                 Stepper(value: $store.automaticUpdateMinutes, in: 5...720, step: 5) {
                     Text("Interval: \(store.automaticUpdateMinutes) minutes")

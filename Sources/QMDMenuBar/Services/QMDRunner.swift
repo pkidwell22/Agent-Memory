@@ -235,7 +235,11 @@ struct QMDRunner: Sendable {
     private func environment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["HOME"] = preferences.homeDirectory
-        env["QMD_LLAMA_GPU"] = preferences.useGPU ? "true" : "false"
+        if preferences.useGPU {
+            env.removeValue(forKey: "QMD_LLAMA_GPU")
+        } else {
+            env["QMD_LLAMA_GPU"] = "false"
+        }
         env["npm_config_cache"] = preferences.npmCachePath
         env["PATH"] = preferences.pathEnvironment
         return env

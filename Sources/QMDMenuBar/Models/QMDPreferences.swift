@@ -28,7 +28,7 @@ struct QMDPreferences: Sendable {
             homeDirectory: home,
             pathEnvironment: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\(home)/.bun/bin:\(home)/.local/bin",
             npmCachePath: "/tmp/qmd-npm-cache",
-            useGPU: false,
+            useGPU: true,
             automaticUpdatesEnabled: false,
             automaticUpdateMinutes: 60,
             commandTimeoutSeconds: 180

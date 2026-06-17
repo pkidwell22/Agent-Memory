@@ -39,6 +39,10 @@ final class QMDStore {
         }
     }
 
+    var useGPU: Bool {
+        didSet { defaults.set(useGPU, forKey: Keys.useGPU) }
+    }
+
     var status = QMDStatus()
     var lastResult: QMDRunResult?
     var runHistory: [QMDRunResult]
@@ -68,6 +72,7 @@ final class QMDStore {
         } else {
             indexName = savedIndexName ?? fallback.indexName
         }
+        useGPU = defaults.object(forKey: Keys.useGPU) as? Bool ?? fallback.useGPU
         fileMask = defaults.string(forKey: Keys.fileMask) ?? fallback.fileMask
         automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
         let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)
@@ -85,6 +90,7 @@ final class QMDStore {
         preferences.memoryRoot = memoryRoot
         preferences.collectionName = collectionName
         preferences.indexName = indexName
+        preferences.useGPU = useGPU
         preferences.fileMask = fileMask
         preferences.automaticUpdatesEnabled = automaticUpdatesEnabled
         preferences.automaticUpdateMinutes = automaticUpdateMinutes
@@ -266,6 +272,7 @@ final class QMDStore {
         static let memoryRoot = "memoryRoot"
         static let collectionName = "collectionName"
         static let indexName = "indexName"
+        static let useGPU = "useGPU"
         static let fileMask = "fileMask"
         static let automaticUpdatesEnabled = "automaticUpdatesEnabled"
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
