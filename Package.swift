@@ -17,6 +17,11 @@ let package = Package(
         .executableTarget(
             name: "QMDMenuBar",
             path: "Sources/QMDMenuBar"
+        ),
+        .testTarget(
+            name: "QMDMenuBarTests",
+            dependencies: ["QMDMenuBar"],
+            path: "Tests/QMDMenuBarTests"
         )
     ]
 )

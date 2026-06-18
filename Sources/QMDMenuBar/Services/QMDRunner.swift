@@ -12,7 +12,30 @@ enum QMDRunnerError: LocalizedError {
 }
 
 struct QMDRunner: Sendable {
+    typealias CommandExecutor = @Sendable ([String]) async throws -> QMDRunResult
+
     let preferences: QMDPreferences
+    private static let defaultSpawnRetryDelays = [5, 15, 30, 60]
+    private let spawnRetryDelays: [Int]
+    private let commandExecutor: CommandExecutor
+
+    init(
+        preferences: QMDPreferences,
+        spawnRetryDelays: [Int] = QMDRunner.defaultSpawnRetryDelays,
+        commandExecutor: CommandExecutor? = nil
+    ) {
+        self.preferences = preferences
+        self.spawnRetryDelays = spawnRetryDelays
+        self.commandExecutor = commandExecutor ?? { arguments in
+            try await Self.runProcess(preferences: preferences, arguments: arguments)
+        }
+    }
+
+    static func watchdogSeconds(for command: QMDCommand, preferences: QMDPreferences) -> Int {
+        let processCount = command == .updateAndEmbed ? 2 : 1
+        let spawnRetrySeconds = defaultSpawnRetryDelays.reduce(0, +)
+        return (preferences.commandTimeoutSeconds + spawnRetrySeconds) * processCount + 30
+    }
 
     func status() async throws -> QMDStatus {
         let result = try await runWithLockRetry(arguments: ["status"])
@@ -135,21 +158,50 @@ struct QMDRunner: Sendable {
     }
 
     private func runWithLockRetry(arguments: [String]) async throws -> QMDRunResult {
+        let startedAt = Date()
         var lastResult: QMDRunResult?
 
-        for attempt in 1...4 {
-            let result = try await run(arguments: arguments)
+        for attempt in 1...spawnRetryDelays.count + 1 {
+            let result: QMDRunResult
+
+            do {
+                result = try await commandExecutor(arguments)
+            } catch {
+                guard isTransientSpawnError(error) else {
+                    throw error
+                }
+
+                if attempt <= spawnRetryDelays.count {
+                    try await Task.sleep(for: .seconds(spawnRetryDelays[attempt - 1]))
+                    continue
+                }
+
+                let command = commandDescription(arguments: ["--index", preferences.indexName] + arguments)
+                return QMDRunResult(
+                    actionTitle: arguments.first ?? "QMD",
+                    command: command,
+                    exitCode: -4,
+                    output: "QMD command could not be started after \(attempt) attempts because macOS temporarily refused to spawn a process.\n\(error.localizedDescription)",
+                    startedAt: startedAt,
+                    finishedAt: Date()
+                )
+            }
+
             if !isDatabaseLocked(result.output) {
                 return result
             }
 
             lastResult = result
-            if attempt < 4 {
+            if attempt < spawnRetryDelays.count + 1 {
                 try await Task.sleep(for: .seconds(attempt * 2))
             }
         }
 
-        return lastResult ?? QMDRunResult(
+        if let lastResult {
+            return lastResult
+        }
+
+        return QMDRunResult(
             actionTitle: arguments.first ?? "QMD",
             command: arguments.joined(separator: " "),
             exitCode: 1,
@@ -164,20 +216,26 @@ struct QMDRunner: Sendable {
             output.localizedCaseInsensitiveContains("SQLITE_BUSY")
     }
 
+    private func isTransientSpawnError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSPOSIXErrorDomain &&
+            nsError.code == Int(POSIXErrorCode.EAGAIN.rawValue)
+    }
+
     @discardableResult
-    private func run(arguments: [String]) async throws -> QMDRunResult {
+    private static func runProcess(preferences: QMDPreferences, arguments: [String]) async throws -> QMDRunResult {
         let startedAt = Date()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: preferences.qmdBinaryPath)
         let indexName = preferences.indexName.trimmingCharacters(in: .whitespacesAndNewlines)
         process.arguments = indexName.isEmpty ? arguments : ["--index", indexName] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: preferences.workingDirectory)
-        process.environment = environment()
+        process.environment = environment(preferences: preferences)
 
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = outputPipe
-        let command = commandDescription(arguments: process.arguments ?? [])
+        let command = commandDescription(qmdBinaryPath: preferences.qmdBinaryPath, arguments: process.arguments ?? [])
         let state = ProcessRunState()
         let output = ProcessOutputBuffer()
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -232,7 +290,7 @@ struct QMDRunner: Sendable {
         }
     }
 
-    private func environment() -> [String: String] {
+    private static func environment(preferences: QMDPreferences) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["HOME"] = preferences.homeDirectory
         if preferences.useGPU {
@@ -246,7 +304,11 @@ struct QMDRunner: Sendable {
     }
 
     private func commandDescription(arguments: [String]) -> String {
-        ([preferences.qmdBinaryPath] + arguments).joined(separator: " ")
+        Self.commandDescription(qmdBinaryPath: preferences.qmdBinaryPath, arguments: arguments)
+    }
+
+    private static func commandDescription(qmdBinaryPath: String, arguments: [String]) -> String {
+        ([qmdBinaryPath] + arguments).joined(separator: " ")
     }
 }
 

@@ -48,6 +48,7 @@ final class QMDStore {
     var runHistory: [QMDRunResult]
     var lastError: String?
     var activeCommand: QMDCommand?
+    var activeCommandTrigger: QMDRunTrigger?
     var activeCommandStartedAt: Date?
     var isRefreshingStatus = false
     var lastStatusRefreshAt: Date?
@@ -129,9 +130,10 @@ final class QMDStore {
         }
     }
 
-    func run(_ command: QMDCommand) {
+    func run(_ command: QMDCommand, trigger: QMDRunTrigger = .manual) {
         guard activeCommand == nil else { return }
         activeCommand = command
+        activeCommandTrigger = trigger
         activeCommandStartedAt = Date()
         lastError = nil
         startCommandWatchdog(for: command)
@@ -141,7 +143,7 @@ final class QMDStore {
 
             do {
                 let result = try await QMDRunner(preferences: preferences).run(command: command)
-                record(result)
+                record(result.triggeredBy(trigger))
                 shouldRefresh = result.succeeded
                 if !result.succeeded {
                     lastError = result.conciseOutput
@@ -153,13 +155,15 @@ final class QMDStore {
                     exitCode: -1,
                     output: error.localizedDescription,
                     startedAt: Date(),
-                    finishedAt: Date()
+                    finishedAt: Date(),
+                    trigger: trigger
                 )
                 record(result)
                 lastError = result.conciseOutput
             }
 
             activeCommand = nil
+            activeCommandTrigger = nil
             activeCommandStartedAt = nil
             commandWatchdogTask?.cancel()
             commandWatchdogTask = nil
@@ -178,10 +182,12 @@ final class QMDStore {
             exitCode: -2,
             output: "Run state was reset manually because QMD was no longer making progress.",
             startedAt: activeCommandStartedAt ?? Date(),
-            finishedAt: Date()
+            finishedAt: Date(),
+            trigger: activeCommandTrigger ?? .manual
         )
         record(result)
         activeCommand = nil
+        activeCommandTrigger = nil
         activeCommandStartedAt = nil
         commandWatchdogTask?.cancel()
         commandWatchdogTask = nil
@@ -217,15 +223,15 @@ final class QMDStore {
 
     private func runAutomaticUpdate() async {
         guard activeCommand == nil else { return }
-        run(.updateAndEmbed)
+        run(.updateAndEmbed, trigger: .automatic)
     }
 
     private func startCommandWatchdog(for command: QMDCommand) {
         commandWatchdogTask?.cancel()
-        let timeout = UInt64(QMDPreferences.defaults.commandTimeoutSeconds + 15)
+        let timeout = QMDRunner.watchdogSeconds(for: command, preferences: preferences)
 
         commandWatchdogTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Int(timeout)))
+            try? await Task.sleep(for: .seconds(timeout))
             self?.expireStuckCommand(command)
         }
     }
@@ -238,10 +244,12 @@ final class QMDStore {
             exitCode: -3,
             output: "Run state expired automatically because QMD did not finish within the app watchdog window.",
             startedAt: activeCommandStartedAt ?? Date(),
-            finishedAt: Date()
+            finishedAt: Date(),
+            trigger: activeCommandTrigger ?? .manual
         )
         record(result)
         activeCommand = nil
+        activeCommandTrigger = nil
         activeCommandStartedAt = nil
         lastError = result.conciseOutput
     }

@@ -125,7 +125,7 @@ private struct RunStateView: View {
                 Spacer()
 
                 if let activeCommand = store.activeCommand {
-                    Text(activeCommand.title)
+                    Text(activeTitle(for: activeCommand))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if let result = store.lastResult {
@@ -136,7 +136,7 @@ private struct RunStateView: View {
             }
 
             if let activeCommand = store.activeCommand {
-                Text("\(activeCommand.title) started \(DateFormatters.shortTime.string(from: store.activeCommandStartedAt ?? Date()))")
+                Text("\(activeTitle(for: activeCommand)) started \(DateFormatters.shortTime.string(from: store.activeCommandStartedAt ?? Date()))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -149,7 +149,7 @@ private struct RunStateView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.red)
             } else if let result = store.lastResult {
-                Text("\(result.actionTitle) at \(result.finishedAtText)")
+                Text("\(result.displayTitle) at \(result.finishedAtText)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -170,6 +170,14 @@ private struct RunStateView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func activeTitle(for command: QMDCommand) -> String {
+        guard store.activeCommandTrigger == .automatic else {
+            return command.title
+        }
+
+        return "\(command.title) (Automatic)"
     }
 }
 
