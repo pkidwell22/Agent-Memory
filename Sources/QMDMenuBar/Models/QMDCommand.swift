@@ -1,11 +1,12 @@
 import Foundation
 
-enum QMDCommand: CaseIterable, Identifiable {
+enum QMDCommand: CaseIterable, Identifiable, Sendable {
     case updateAndEmbed
     case updateIndex
     case generateEmbeddings
     case forceRebuildEmbeddings
     case ensureCollection
+    case doctor
 
     var id: String {
         switch self {
@@ -19,6 +20,8 @@ enum QMDCommand: CaseIterable, Identifiable {
             "forceRebuildEmbeddings"
         case .ensureCollection:
             "ensureCollection"
+        case .doctor:
+            "doctor"
         }
     }
 
@@ -33,7 +36,9 @@ enum QMDCommand: CaseIterable, Identifiable {
         case .forceRebuildEmbeddings:
             "Force Rebuild"
         case .ensureCollection:
-            "Ensure Collections"
+            "Reconcile Collections"
+        case .doctor:
+            "QMD Doctor"
         }
     }
 
@@ -49,6 +54,8 @@ enum QMDCommand: CaseIterable, Identifiable {
             "exclamationmark.arrow.triangle.2.circlepath"
         case .ensureCollection:
             "folder.badge.plus"
+        case .doctor:
+            "stethoscope"
         }
     }
 }

@@ -1,10 +1,14 @@
 import AppKit
 import Foundation
+import Network
 import Observation
+import ServiceManagement
 
 @MainActor
 @Observable
 final class QMDStore {
+    typealias RunnerFactory = @Sendable (QMDPreferences) -> any QMDRunning
+
     var qmdBinaryPath: String {
         didSet { defaults.set(qmdBinaryPath, forKey: Keys.qmdBinaryPath) }
     }
@@ -25,10 +29,18 @@ final class QMDStore {
         didSet { defaults.set(fileMask, forKey: Keys.fileMask) }
     }
 
+    var workingDirectory: String {
+        didSet { defaults.set(workingDirectory, forKey: Keys.workingDirectory) }
+    }
+
+    var pathEnvironment: String {
+        didSet { defaults.set(pathEnvironment, forKey: Keys.pathEnvironment) }
+    }
+
     var automaticUpdatesEnabled: Bool {
         didSet {
             defaults.set(automaticUpdatesEnabled, forKey: Keys.automaticUpdatesEnabled)
-            configureAutomaticTimer()
+            configureAutomaticTimer(initialDelay: automaticUpdatesEnabled ? 5 : nil)
         }
     }
 
@@ -43,6 +55,11 @@ final class QMDStore {
         didSet { defaults.set(useGPU, forKey: Keys.useGPU) }
     }
 
+    private enum RunOrigin {
+        case manual
+        case automatic
+    }
+
     var status = QMDStatus()
     var lastResult: QMDRunResult?
     var runHistory: [QMDRunResult]
@@ -51,13 +68,43 @@ final class QMDStore {
     var activeCommandStartedAt: Date?
     var isRefreshingStatus = false
     var lastStatusRefreshAt: Date?
+    var healthReport: QMDHealthReport?
+    var isCheckingHealth = false
+    var nextAutomaticUpdateAt: Date?
+    var lastAutomaticUpdateAt: Date?
+    var launchAtLoginEnabled = false
+    var launchAtLoginError: String?
+    var searchQuery = ""
+    var searchMode: QMDSearchMode = .keyword
+    var searchResults: [QMDSearchResult] = []
+    var searchError: String?
+    var isSearching = false
+    var collectionPlan: QMDCollectionPlan?
+    var collectionPlanError: String?
+    var isPlanningCollections = false
+    var updateState: AppUpdateState = .idle
+    var isCancellingCommand = false
 
     private let defaults: UserDefaults
+    private let runnerFactory: RunnerFactory
     private var automaticTask: Task<Void, Never>?
+    private var commandTask: Task<Void, Never>?
     private var commandWatchdogTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
+    private var activeSearchID: UUID?
+    private var activeRunID: UUID?
+    private var cancelledRunID: UUID?
+    private var wakeObserver: NSObjectProtocol?
+    private let networkMonitor = NWPathMonitor()
+    private var hasObservedNetworkState = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        runnerFactory: @escaping RunnerFactory = { QMDRunner(preferences: $0) },
+        refreshOnLaunch: Bool = true
+    ) {
         self.defaults = defaults
+        self.runnerFactory = runnerFactory
         let fallback = QMDPreferences.defaults
         qmdBinaryPath = defaults.string(forKey: Keys.qmdBinaryPath) ?? fallback.qmdBinaryPath
         memoryRoot = defaults.string(forKey: Keys.memoryRoot) ?? fallback.memoryRoot
@@ -74,14 +121,24 @@ final class QMDStore {
         }
         useGPU = defaults.object(forKey: Keys.useGPU) as? Bool ?? fallback.useGPU
         fileMask = defaults.string(forKey: Keys.fileMask) ?? fallback.fileMask
+        workingDirectory = defaults.string(forKey: Keys.workingDirectory) ?? fallback.workingDirectory
+        pathEnvironment = defaults.string(forKey: Keys.pathEnvironment) ?? fallback.pathEnvironment
         automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
         let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)
         automaticUpdateMinutes = savedMinutes > 0 ? savedMinutes : fallback.automaticUpdateMinutes
         runHistory = Self.loadRunHistory(from: defaults)
         lastResult = runHistory.first
+        lastAutomaticUpdateAt = defaults.object(forKey: Keys.lastAutomaticUpdateAt) as? Date
+        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
-        configureAutomaticTimer()
-        Task { await refreshStatus() }
+        configureLifecycleMonitoring()
+        configureAutomaticTimer(initialDelay: 5)
+        if refreshOnLaunch {
+            Task {
+                await runHealthCheck()
+                await checkForUpdates()
+            }
+        }
     }
 
     var preferences: QMDPreferences {
@@ -92,13 +149,15 @@ final class QMDStore {
         preferences.indexName = indexName
         preferences.useGPU = useGPU
         preferences.fileMask = fileMask
+        preferences.workingDirectory = workingDirectory
+        preferences.pathEnvironment = pathEnvironment
         preferences.automaticUpdatesEnabled = automaticUpdatesEnabled
         preferences.automaticUpdateMinutes = automaticUpdateMinutes
         return preferences
     }
 
     var isRunning: Bool {
-        activeCommand != nil || isRefreshingStatus
+        activeCommand != nil || isCancellingCommand || isRefreshingStatus || isCheckingHealth || isSearching || isPlanningCollections
     }
 
     var isCommandRunning: Bool {
@@ -106,7 +165,7 @@ final class QMDStore {
     }
 
     var menuBarSystemImage: String {
-        if activeCommand != nil {
+        if activeCommand != nil || isCancellingCommand {
             "arrow.triangle.2.circlepath"
         } else if lastError != nil {
             "exclamationmark.triangle"
@@ -116,12 +175,13 @@ final class QMDStore {
     }
 
     func refreshStatus() async {
-        guard !isRefreshingStatus else { return }
+        guard !isRefreshingStatus, !isCheckingHealth, !isSearching, !isPlanningCollections,
+              !isCancellingCommand, activeCommand == nil else { return }
         isRefreshingStatus = true
         defer { isRefreshingStatus = false }
 
         do {
-            status = try await QMDRunner(preferences: preferences).status()
+            status = try await runnerFactory(preferences).status()
             lastStatusRefreshAt = Date()
             lastError = nil
         } catch {
@@ -129,24 +189,81 @@ final class QMDStore {
         }
     }
 
-    func run(_ command: QMDCommand) {
-        guard activeCommand == nil else { return }
+    func runHealthCheck() async {
+        guard !isCheckingHealth, !isRefreshingStatus, !isSearching, !isPlanningCollections,
+              !isCancellingCommand, activeCommand == nil else { return }
+        isCheckingHealth = true
+        let report = await QMDHealthChecker(preferences: preferences).check()
+        healthReport = report
+        if let checkedStatus = report.status {
+            status = checkedStatus
+            lastStatusRefreshAt = report.checkedAt
+        }
+        if report.hasFailures {
+            lastError = report.items.first { $0.state == .failed }?.detail
+        } else {
+            lastError = nil
+        }
+        isCheckingHealth = false
+    }
+
+    @discardableResult
+    func run(_ command: QMDCommand) -> Bool {
+        run(command, origin: .manual)
+    }
+
+    @discardableResult
+    private func run(_ command: QMDCommand, origin: RunOrigin) -> Bool {
+        let runner = runnerFactory(preferences)
+        return startRun(command, origin: origin) {
+            try await runner.run(command: command)
+        }
+    }
+
+    @discardableResult
+    private func startRun(
+        _ command: QMDCommand,
+        origin: RunOrigin,
+        operation: @escaping @Sendable () async throws -> QMDRunResult
+    ) -> Bool {
+        guard activeCommand == nil, !isCancellingCommand, !isRefreshingStatus, !isCheckingHealth, !isSearching, !isPlanningCollections else {
+            return false
+        }
+        let runID = UUID()
+        activeRunID = runID
         activeCommand = command
         activeCommandStartedAt = Date()
         lastError = nil
         startCommandWatchdog(for: command)
 
-        Task {
+        commandTask = Task { [weak self] in
             var shouldRefresh = false
+            var outcome: Result<QMDRunResult, Error>
 
             do {
-                let result = try await QMDRunner(preferences: preferences).run(command: command)
-                record(result)
+                outcome = .success(try await operation())
+            } catch {
+                outcome = .failure(error)
+            }
+
+            guard let self else { return }
+            if self.cancelledRunID == runID {
+                self.cancelledRunID = nil
+                self.isCancellingCommand = false
+                self.commandTask = nil
+                return
+            }
+            guard self.activeRunID == runID else { return }
+
+            switch outcome {
+            case let .success(result):
+                self.record(result)
                 shouldRefresh = result.succeeded
                 if !result.succeeded {
-                    lastError = result.conciseOutput
+                    self.lastError = result.conciseOutput
                 }
-            } catch {
+                self.finishAutomaticRunIfNeeded(origin: origin, result: result)
+            case let .failure(error):
                 let result = QMDRunResult(
                     actionTitle: command.title,
                     command: command.title,
@@ -155,37 +272,57 @@ final class QMDStore {
                     startedAt: Date(),
                     finishedAt: Date()
                 )
-                record(result)
-                lastError = result.conciseOutput
+                self.record(result)
+                self.lastError = result.conciseOutput
+                self.finishAutomaticRunIfNeeded(origin: origin, result: result)
             }
 
-            activeCommand = nil
-            activeCommandStartedAt = nil
-            commandWatchdogTask?.cancel()
-            commandWatchdogTask = nil
+            self.activeRunID = nil
+            self.activeCommand = nil
+            self.activeCommandStartedAt = nil
+            self.commandTask = nil
+            self.commandWatchdogTask?.cancel()
+            self.commandWatchdogTask = nil
 
             if shouldRefresh {
-                await refreshStatus()
+                if command == .doctor {
+                    await self.runHealthCheck()
+                } else {
+                    await self.refreshStatus()
+                }
             }
         }
+        return true
     }
 
     func resetActiveCommand() {
-        guard let command = activeCommand else { return }
-        let result = QMDRunResult(
-            actionTitle: command.title,
-            command: command.title,
+        cancelActiveRun(
             exitCode: -2,
-            output: "Run state was reset manually because QMD was no longer making progress.",
-            startedAt: activeCommandStartedAt ?? Date(),
-            finishedAt: Date()
+            message: "The run was cancelled manually because QMD was no longer making progress."
         )
-        record(result)
-        activeCommand = nil
-        activeCommandStartedAt = nil
-        commandWatchdogTask?.cancel()
-        commandWatchdogTask = nil
-        lastError = result.conciseOutput
+    }
+
+    func prepareCollectionReconciliation() async {
+        guard !isRunning else { return }
+        isPlanningCollections = true
+        collectionPlanError = nil
+        do {
+            collectionPlan = try await QMDRunner(preferences: preferences).collectionReconciliationPlan()
+        } catch {
+            collectionPlan = nil
+            collectionPlanError = error.localizedDescription
+        }
+        isPlanningCollections = false
+    }
+
+    func applyCollectionReconciliation() {
+        guard let plan = collectionPlan else { return }
+        let runner = QMDRunner(preferences: preferences)
+        if startRun(.ensureCollection, origin: .manual, operation: {
+            try await runner.applyCollectionPlan(plan)
+        }) {
+            collectionPlan = nil
+        }
     }
 
     func clearRunHistory() {
@@ -202,44 +339,236 @@ final class QMDStore {
         NSWorkspace.shared.open(URL(fileURLWithPath: "\(preferences.homeDirectory)/.cache/qmd"))
     }
 
-    private func configureAutomaticTimer() {
-        automaticTask?.cancel()
-        guard automaticUpdatesEnabled else { return }
+    func chooseQMDBinary() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose QMD Executable"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: qmdBinaryPath).deletingLastPathComponent()
+        if panel.runModal() == .OK, let url = panel.url {
+            qmdBinaryPath = url.path
+        }
+    }
 
-        let seconds = max(5, automaticUpdateMinutes) * 60
-        automaticTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(seconds))
-                await self?.runAutomaticUpdate()
+    func chooseMemoryRoot() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Agent-Memory Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: memoryRoot)
+        if panel.runModal() == .OK, let url = panel.url {
+            memoryRoot = url.path
+        }
+    }
+
+    func chooseWorkingDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose QMD Working Directory"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: workingDirectory)
+        if panel.runModal() == .OK, let url = panel.url {
+            workingDirectory = url.path
+        }
+    }
+
+    func performSearch() {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, activeCommand == nil, !isCancellingCommand, !isPlanningCollections,
+              !isRefreshingStatus, !isCheckingHealth else { return }
+        searchTask?.cancel()
+        let searchID = UUID()
+        activeSearchID = searchID
+        searchError = nil
+        isSearching = true
+        let mode = searchMode
+        let runner = QMDRunner(preferences: preferences)
+
+        searchTask = Task { [weak self] in
+            do {
+                let results = try await runner.search(query: query, mode: mode)
+                guard !Task.isCancelled, self?.activeSearchID == searchID else { return }
+                self?.searchResults = results
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self?.activeSearchID == searchID else { return }
+                self?.searchResults = []
+                self?.searchError = error.localizedDescription
+            }
+            guard self?.activeSearchID == searchID else { return }
+            self?.activeSearchID = nil
+            self?.isSearching = false
+            self?.searchTask = nil
+        }
+    }
+
+    func clearSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        activeSearchID = nil
+        isSearching = false
+        searchQuery = ""
+        searchResults = []
+        searchError = nil
+    }
+
+    func openSearchResult(_ result: QMDSearchResult) {
+        guard !isRunning else { return }
+        Task {
+            do {
+                let path = try await QMDRunner(preferences: preferences).resolvedFilePath(for: result)
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            } catch {
+                searchError = error.localizedDescription
             }
         }
     }
 
-    private func runAutomaticUpdate() async {
-        guard activeCommand == nil else { return }
-        run(.updateAndEmbed)
+    func copySearchResult(_ result: QMDSearchResult) {
+        let text = [result.displayTitle, result.file, result.displaySnippet]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        launchAtLoginError = nil
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+        } catch {
+            launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+            launchAtLoginError = error.localizedDescription
+        }
+    }
+
+    func checkForUpdates() async {
+        updateState = .checking
+        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        do {
+            updateState = try await AppUpdateChecker().check(currentVersion: currentVersion)
+        } catch {
+            updateState = .failed(error.localizedDescription)
+        }
+    }
+
+    func openReleasePage(_ release: AppRelease) {
+        NSWorkspace.shared.open(release.pageURL)
+    }
+
+    private func configureAutomaticTimer(initialDelay: Int? = nil) {
+        automaticTask?.cancel()
+        guard automaticUpdatesEnabled else {
+            nextAutomaticUpdateAt = nil
+            return
+        }
+
+        let interval = max(5, automaticUpdateMinutes) * 60
+        let firstDelay = initialDelay ?? interval
+        automaticTask = Task { [weak self] in
+            var delay = firstDelay
+            while !Task.isCancelled {
+                self?.nextAutomaticUpdateAt = Date().addingTimeInterval(TimeInterval(delay))
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    break
+                }
+                let started = await self?.runAutomaticUpdate() ?? false
+                delay = started ? interval : 60
+            }
+        }
+    }
+
+    private func runAutomaticUpdate() async -> Bool {
+        guard automaticUpdatesEnabled, activeCommand == nil, !isCancellingCommand, !isPlanningCollections,
+              !isRefreshingStatus, !isCheckingHealth, !isSearching else {
+            return false
+        }
+        return run(.updateAndEmbed, origin: .automatic)
+    }
+
+    private func finishAutomaticRunIfNeeded(origin: RunOrigin, result: QMDRunResult) {
+        guard origin == .automatic else { return }
+        lastAutomaticUpdateAt = result.finishedAt
+        defaults.set(result.finishedAt, forKey: Keys.lastAutomaticUpdateAt)
+        if !result.succeeded {
+            AutomaticUpdateNotifier.notifyFailure(result.conciseOutput)
+        }
+    }
+
+    private func configureLifecycleMonitoring() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.configureAutomaticTimer(initialDelay: 5)
+            }
+        }
+
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.hasObservedNetworkState {
+                    self.configureAutomaticTimer(initialDelay: 5)
+                } else {
+                    self.hasObservedNetworkState = true
+                }
+            }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "QMDMenuBar.NetworkMonitor"))
     }
 
     private func startCommandWatchdog(for command: QMDCommand) {
         commandWatchdogTask?.cancel()
-        let timeout = UInt64(QMDPreferences.defaults.commandTimeoutSeconds + 15)
+        let timeout = preferences.commandTimeoutSeconds + 15
 
         commandWatchdogTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Int(timeout)))
+            do {
+                try await Task.sleep(for: .seconds(timeout))
+            } catch {
+                return
+            }
             self?.expireStuckCommand(command)
         }
     }
 
     private func expireStuckCommand(_ command: QMDCommand) {
         guard activeCommand == command else { return }
+        cancelActiveRun(
+            exitCode: -3,
+            message: "The run was cancelled automatically because QMD did not finish within the watchdog window."
+        )
+    }
+
+    private func cancelActiveRun(exitCode: Int32, message: String) {
+        guard let command = activeCommand, let runID = activeRunID else { return }
         let result = QMDRunResult(
             actionTitle: command.title,
             command: command.title,
-            exitCode: -3,
-            output: "Run state expired automatically because QMD did not finish within the app watchdog window.",
+            exitCode: exitCode,
+            output: message,
             startedAt: activeCommandStartedAt ?? Date(),
             finishedAt: Date()
         )
+        activeRunID = nil
+        cancelledRunID = runID
+        isCancellingCommand = true
+        commandTask?.cancel()
+        commandWatchdogTask?.cancel()
+        commandWatchdogTask = nil
         record(result)
         activeCommand = nil
         activeCommandStartedAt = nil
@@ -254,7 +583,8 @@ final class QMDStore {
     }
 
     private func persistRunHistory() {
-        guard let data = try? JSONEncoder().encode(runHistory) else { return }
+        let summaries = runHistory.map(\.persistedSummary)
+        guard let data = try? JSONEncoder().encode(summaries) else { return }
         defaults.set(data, forKey: Keys.runHistory)
     }
 
@@ -274,8 +604,11 @@ final class QMDStore {
         static let indexName = "indexName"
         static let useGPU = "useGPU"
         static let fileMask = "fileMask"
+        static let workingDirectory = "workingDirectory"
+        static let pathEnvironment = "pathEnvironment"
         static let automaticUpdatesEnabled = "automaticUpdatesEnabled"
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
         static let runHistory = "runHistory"
+        static let lastAutomaticUpdateAt = "lastAutomaticUpdateAt"
     }
 }

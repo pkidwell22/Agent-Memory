@@ -6,14 +6,31 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("QMD") {
-                TextField("Binary path", text: $store.qmdBinaryPath)
+                LabeledContent("Binary") {
+                    HStack {
+                        TextField("Binary path", text: $store.qmdBinaryPath)
+                        Button("Choose…") { store.chooseQMDBinary() }
+                    }
+                }
+                LabeledContent("Working directory") {
+                    HStack {
+                        TextField("Working directory", text: $store.workingDirectory)
+                        Button("Choose…") { store.chooseWorkingDirectory() }
+                    }
+                }
+                TextField("PATH", text: $store.pathEnvironment)
                 LabeledContent("Index", value: "Default QMD index")
                 LabeledContent("Collections", value: "iCloud agent-memory directories")
                 TextField("File mask", text: $store.fileMask)
             }
 
             Section("Agent Memory") {
-                TextField("Memory root", text: $store.memoryRoot)
+                LabeledContent("Memory root") {
+                    HStack {
+                        TextField("Memory root", text: $store.memoryRoot)
+                        Button("Choose…") { store.chooseMemoryRoot() }
+                    }
+                }
 
                 Button {
                     store.openMemoryRoot()
@@ -28,14 +45,208 @@ struct SettingsView: View {
                 Stepper(value: $store.automaticUpdateMinutes, in: 5...720, step: 5) {
                     Text("Interval: \(store.automaticUpdateMinutes) minutes")
                 }
+
+                if let next = store.nextAutomaticUpdateAt, store.automaticUpdatesEnabled {
+                    LabeledContent("Next update") {
+                        Text(next, style: .relative)
+                    }
+                }
+                if let last = store.lastAutomaticUpdateAt {
+                    LabeledContent("Last automatic update", value: DateFormatters.timestamp.string(from: last))
+                }
+
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { store.launchAtLoginEnabled },
+                    set: { store.setLaunchAtLogin($0) }
+                ))
+                if let error = store.launchAtLoginError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
 
+            HealthSection(store: store)
+            CollectionReconciliationSection(store: store)
+            UpdatesSection(store: store)
             DiagnosticsSection(store: store)
             RecentRunsSection(store: store)
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(width: 620)
+        .frame(width: 680, height: 720)
+    }
+}
+
+private struct UpdatesSection: View {
+    let store: QMDStore
+
+    var body: some View {
+        Section("Updates") {
+            LabeledContent(
+                "Installed version",
+                value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
+            )
+
+            switch store.updateState {
+            case .idle:
+                Text("Check GitHub Releases for a newer signed build.")
+                    .foregroundStyle(.secondary)
+            case .checking:
+                Label("Checking…", systemImage: "arrow.triangle.2.circlepath")
+            case .noPublishedReleases:
+                Text("No GitHub Releases have been published yet.")
+                    .foregroundStyle(.secondary)
+            case let .current(latestVersion):
+                Label("Up to date (\(latestVersion))", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case let .available(release):
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Version \(release.version) is available", systemImage: "arrow.down.circle.fill")
+                        .foregroundStyle(.blue)
+                    Button("Open Release Page") {
+                        store.openReleasePage(release)
+                    }
+                }
+            case let .failed(message):
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Button {
+                Task { await store.checkForUpdates() }
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.clockwise")
+            }
+            .disabled(store.updateState.isChecking)
+        }
+    }
+}
+
+private extension AppUpdateState {
+    var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
+private struct CollectionReconciliationSection: View {
+    let store: QMDStore
+    @State private var isConfirmingApply = false
+
+    var body: some View {
+        Section("Collection Reconciliation") {
+            Text("Compare QMD collections with the folders currently present in agent-memory before making changes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let error = store.collectionPlanError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if let plan = store.collectionPlan {
+                if plan.isEmpty {
+                    Label("Collections already match agent-memory.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    ForEach(plan.changes) { change in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(change.action.title)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(change.action == .remove || change.action == .replace ? Color.orange : Color.accentColor)
+                            Text(change.detail)
+                                .font(.caption)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    Button(role: .destructive) {
+                        isConfirmingApply = true
+                    } label: {
+                        Label("Apply \(plan.changes.count) Changes", systemImage: "checkmark.circle")
+                    }
+                    .disabled(store.isRunning)
+                }
+            }
+
+            Button {
+                Task { await store.prepareCollectionReconciliation() }
+            } label: {
+                Label(store.isPlanningCollections ? "Scanning…" : "Preview Changes", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(store.isRunning)
+        }
+        .confirmationDialog(
+            "Apply collection changes?",
+            isPresented: $isConfirmingApply,
+            titleVisibility: .visible
+        ) {
+            Button("Apply Changes", role: .destructive) {
+                store.applyCollectionReconciliation()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Stale collections will be removed. Replacements remove and re-add a collection, so collection-specific contexts may need to be restored afterward.")
+        }
+    }
+}
+
+private struct HealthSection: View {
+    let store: QMDStore
+
+    var body: some View {
+        Section("Health Check") {
+            if let report = store.healthReport {
+                ForEach(report.items) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(item.title, systemImage: item.state.systemImage)
+                            .foregroundStyle(color(for: item.state))
+                        Text(item.detail)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                        if let remediation = item.remediation {
+                            Text(remediation)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+
+                LabeledContent("Last checked", value: DateFormatters.timestamp.string(from: report.checkedAt))
+            } else {
+                Text("Run the health check to verify QMD, its runtime, index, and agent-memory folder.")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button {
+                    Task { await store.runHealthCheck() }
+                } label: {
+                    Label(store.isCheckingHealth ? "Checking…" : "Run Health Check", systemImage: "heart.text.square")
+                }
+                .disabled(store.isRunning)
+
+                Button {
+                    store.run(.doctor)
+                } label: {
+                    Label("Run QMD Doctor", systemImage: "stethoscope")
+                }
+                .disabled(store.isRunning)
+            }
+        }
+    }
+
+    private func color(for state: QMDHealthState) -> Color {
+        switch state {
+        case .passed: .green
+        case .warning: .orange
+        case .failed: .red
+        }
     }
 }
 

@@ -43,11 +43,9 @@ struct QMDStatus: Sendable {
                     status.collectionName = preferredCollection
                 }
             } else if trimmed.hasPrefix("Files:"), let active = activeCollection {
-                if let files = firstInteger(in: trimmed) {
-                    status.collectionFiles = (status.collectionFiles ?? 0) + files
-                    if active == preferredCollection {
-                        status.collectionName = preferredCollection
-                    }
+                if active == preferredCollection, let files = firstInteger(in: trimmed) {
+                    status.collectionFiles = files
+                    status.collectionName = preferredCollection
                 }
                 activeCollection = nil
             }
@@ -57,7 +55,10 @@ struct QMDStatus: Sendable {
     }
 
     private static func firstInteger(in text: String) -> Int? {
-        let digits = text.split { !$0.isNumber }.first.map(String.init)
+        let digits = text.replacingOccurrences(of: ",", with: "")
+            .split { !$0.isNumber }
+            .first
+            .map(String.init)
         return digits.flatMap(Int.init)
     }
 }

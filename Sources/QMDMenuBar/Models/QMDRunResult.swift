@@ -44,7 +44,10 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
         }
 
         let selected = signalLines.isEmpty ? Array(lines.suffix(3)) : Array(signalLines.suffix(4))
-        return selected.joined(separator: "\n")
+        let summary = selected.joined(separator: "\n")
+        let maximumCharacters = 4_000
+        guard summary.count > maximumCharacters else { return summary }
+        return "[Earlier summary truncated]\n" + summary.suffix(maximumCharacters)
     }
 
     init(
@@ -72,6 +75,18 @@ struct QMDRunResult: Codable, Identifiable, Sendable {
             command: command,
             exitCode: exitCode,
             output: output,
+            startedAt: startedAt,
+            finishedAt: finishedAt
+        )
+    }
+
+    var persistedSummary: QMDRunResult {
+        QMDRunResult(
+            id: id,
+            actionTitle: actionTitle,
+            command: command,
+            exitCode: exitCode,
+            output: conciseOutput,
             startedAt: startedAt,
             finishedAt: finishedAt
         )
