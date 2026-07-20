@@ -2,8 +2,8 @@ import Foundation
 
 enum CollectionNaming {
     static func canonicalName(for folderName: String) -> String {
-        let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+        let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let allowed = CharacterSet.alphanumerics
         var result = ""
         var pendingSeparator = false
 
@@ -19,7 +19,7 @@ enum CollectionNaming {
             }
         }
 
-        let normalized = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        let normalized = result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return normalized.isEmpty ? "collection" : normalized
     }
 

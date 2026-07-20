@@ -101,6 +101,7 @@ final class QMDRunnerTests: XCTestCase {
         #!/bin/sh
         if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
           echo 'alpha (qmd://alpha/)'
+          echo 'obsidian (qmd://obsidian/)'
           echo 'stale (qmd://stale/)'
           echo 'external (qmd://external/)'
           exit 0
@@ -111,6 +112,10 @@ final class QMDRunnerTests: XCTestCase {
             alpha)
               echo "  Path: $HOME/agent-memory/alpha"
               echo '  Pattern: *.txt'
+              ;;
+            obsidian)
+              echo "  Path: $HOME/agent-memory/.obsidian"
+              echo '  Pattern: **/*.md'
               ;;
             stale)
               echo "  Path: $HOME/agent-memory/stale"
@@ -134,6 +139,14 @@ final class QMDRunnerTests: XCTestCase {
             at: memoryRoot.appendingPathComponent("new folder", isDirectory: true),
             withIntermediateDirectories: true
         )
+        try FileManager.default.createDirectory(
+            at: memoryRoot.appendingPathComponent("Agent Memory", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: memoryRoot.appendingPathComponent(".obsidian", isDirectory: true),
+            withIntermediateDirectories: true
+        )
         var preferences = fixture.preferences
         preferences.memoryRoot = memoryRoot.path
 
@@ -145,7 +158,12 @@ final class QMDRunnerTests: XCTestCase {
         XCTAssertTrue(plan.changes.contains { $0.action == .replace && $0.existing?.name == "alpha" })
         XCTAssertTrue(plan.changes.contains { $0.action == .remove && $0.existing?.name == "stale" })
         XCTAssertTrue(plan.changes.contains { $0.action == .add && $0.desired?.name == "new-folder" })
+        XCTAssertTrue(plan.changes.contains { $0.action == .add && $0.desired?.name == "agent-memory" })
         XCTAssertTrue(plan.changes.contains { $0.action == .add && $0.desired?.name == "agent-memory-root" })
+        XCTAssertFalse(
+            plan.changes.contains { $0.existing?.name == "obsidian" },
+            "Unexpected hidden-folder change: \(plan.changes)"
+        )
         XCTAssertFalse(plan.changes.contains { $0.existing?.name == "external" })
     }
 }
@@ -169,6 +187,11 @@ private final class ShellFixture {
         value.homeDirectory = directory.path
         value.pathEnvironment = "/usr/bin:/bin"
         value.npmCachePath = directory.appendingPathComponent("npm-cache").path
+        value.memoryRoot = directory.appendingPathComponent("agent-memory", isDirectory: true).path
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: value.memoryRoot),
+            withIntermediateDirectories: true
+        )
         value.commandTimeoutSeconds = 5
         preferences = value
     }

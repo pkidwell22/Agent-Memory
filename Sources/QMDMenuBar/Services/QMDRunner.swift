@@ -106,7 +106,7 @@ struct QMDRunner: QMDRunning, Sendable {
         for target in desired {
             if let sameName = existing.first(where: { $0.name.caseInsensitiveCompare(target.name) == .orderedSame }) {
                 matchedExistingNames.insert(sameName.name)
-                if sameName.path != target.path || sameName.pattern != target.pattern {
+                if normalizedPath(sameName.path) != normalizedPath(target.path) || sameName.pattern != target.pattern {
                     changes.append(QMDCollectionChange(
                         action: .replace,
                         existing: sameName,
@@ -114,7 +114,7 @@ struct QMDRunner: QMDRunning, Sendable {
                         detail: "Replace \(sameName.name) to use \(target.path) with mask \(target.pattern). Existing collection contexts may need to be restored."
                     ))
                 }
-            } else if let samePath = existing.first(where: { $0.path == target.path }) {
+            } else if let samePath = existing.first(where: { normalizedPath($0.path) == normalizedPath(target.path) }) {
                 matchedExistingNames.insert(samePath.name)
                 if samePath.pattern == target.pattern {
                     changes.append(QMDCollectionChange(
@@ -140,9 +140,9 @@ struct QMDRunner: QMDRunning, Sendable {
             }
         }
 
-        let root = URL(fileURLWithPath: preferences.memoryRoot).standardizedFileURL.path
+        let root = normalizedPath(preferences.memoryRoot)
         for current in existing where !matchedExistingNames.contains(current.name) {
-            let path = URL(fileURLWithPath: current.path).standardizedFileURL.path
+            let path = normalizedPath(current.path)
             guard path == root || path.hasPrefix(root + "/") else { continue }
             changes.append(QMDCollectionChange(
                 action: .remove,
@@ -211,19 +211,31 @@ struct QMDRunner: QMDRunning, Sendable {
     func run(command: QMDCommand) async throws -> QMDRunResult {
         switch command {
         case .updateAndEmbed:
+            let collections = try await ensureAgentMemoryCollections()
+            guard collections.succeeded else { return collections.labeled(command.title) }
             let update = try await runWithLockRetry(arguments: ["update"])
             guard update.succeeded else { return update.labeled(command.title) }
             let embed = try await runWithLockRetry(arguments: ["embed", "--chunk-strategy", "auto"])
             return QMDRunResult(
                 actionTitle: command.title,
-                command: "\(update.command) && \(embed.command)",
+                command: "\(collections.command) && \(update.command) && \(embed.command)",
                 exitCode: embed.exitCode,
                 output: "Update:\n\(update.output)\n\nEmbed:\n\(embed.output)",
-                startedAt: update.startedAt,
+                startedAt: collections.startedAt,
                 finishedAt: embed.finishedAt
             )
         case .updateIndex:
-            return try await runWithLockRetry(arguments: ["update"]).labeled(command.title)
+            let collections = try await ensureAgentMemoryCollections()
+            guard collections.succeeded else { return collections.labeled(command.title) }
+            let update = try await runWithLockRetry(arguments: ["update"])
+            return QMDRunResult(
+                actionTitle: command.title,
+                command: "\(collections.command) && \(update.command)",
+                exitCode: update.exitCode,
+                output: update.output,
+                startedAt: collections.startedAt,
+                finishedAt: update.finishedAt
+            )
         case .generateEmbeddings:
             return try await runWithLockRetry(arguments: ["embed", "--chunk-strategy", "auto"]).labeled(command.title)
         case .forceRebuildEmbeddings:
@@ -288,7 +300,7 @@ struct QMDRunner: QMDRunning, Sendable {
     private func collectionExists(_ name: String, in collectionList: String) -> Bool {
         collectionList.split(separator: "\n").contains { rawLine in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            return line == "\(name) (qmd://\(name)/)"
+            return line.caseInsensitiveCompare("\(name) (qmd://\(name)/)") == .orderedSame
         }
     }
 
@@ -297,7 +309,7 @@ struct QMDRunner: QMDRunning, Sendable {
         let directoryURLs = try FileManager.default.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: []
         )
 
         let folders = try directoryURLs.filter { url in
@@ -354,6 +366,10 @@ struct QMDRunner: QMDRunning, Sendable {
 
     private func collectionAddArguments(_ collection: QMDCollectionDefinition) -> [String] {
         ["collection", "add", collection.path, "--name", collection.name, "--mask", collection.pattern]
+    }
+
+    private func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func runWithLockRetry(arguments: [String]) async throws -> QMDRunResult {

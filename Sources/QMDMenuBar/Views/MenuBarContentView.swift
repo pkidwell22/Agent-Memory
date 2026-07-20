@@ -91,7 +91,17 @@ private struct SearchView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 TextField("Search agent memory", text: Bindable(store).searchQuery)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(
+                        Color.primary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.primary.opacity(isSearchFocused ? 0.24 : 0.12), lineWidth: 1)
+                    }
                     .focused($isSearchFocused)
                     .onSubmit { store.performSearch() }
 
@@ -118,13 +128,7 @@ private struct SearchView: View {
                 .help("Focus search (⌘F)")
             }
 
-            Picker("Search mode", selection: Bindable(store).searchMode) {
-                ForEach(QMDSearchMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            SearchModeSelector(store: store)
 
             if let error = store.searchError {
                 Text(error)
@@ -145,6 +149,37 @@ private struct SearchView: View {
             }
         }
         .onAppear { isSearchFocused = true }
+    }
+}
+
+private struct SearchModeSelector: View {
+    let store: QMDStore
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(QMDSearchMode.allCases) { mode in
+                let isSelected = store.searchMode == mode
+                Button {
+                    store.searchMode = mode
+                } label: {
+                    Text(mode.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .frame(minWidth: 88, minHeight: 26)
+                        .background(
+                            isSelected ? Color(nsColor: .darkGray) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(
+            Color.primary.opacity(0.10),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
     }
 }
 
@@ -198,15 +233,17 @@ private struct HeaderView: View {
     let store: QMDStore
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: store.menuBarSystemImage)
-                .font(.title2)
-                .foregroundStyle(store.lastError == nil ? Color.accentColor : Color.red)
-                .frame(width: 28)
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .center, spacing: 5) {
+                HStack(spacing: 9) {
+                    Image(systemName: store.menuBarSystemImage)
+                        .font(.title2)
+                        .foregroundStyle(store.lastError == nil ? Color.accentColor : Color.red)
+                        .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("QMD Agent Memory")
-                    .font(.headline)
+                    Text("QMD Agent Memory")
+                        .font(.headline)
+                }
 
                 Text(store.status.summary)
                     .foregroundStyle(.secondary)
@@ -231,8 +268,8 @@ private struct HeaderView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
 
             HoverIconButton(systemImage: "arrow.clockwise", help: "Refresh status", disabled: store.isRunning) {
                 Task { await store.refreshStatus() }

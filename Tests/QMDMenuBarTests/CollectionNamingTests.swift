@@ -3,9 +3,9 @@ import XCTest
 
 final class CollectionNamingTests: XCTestCase {
     func testCanonicalNamesOnlyContainQMDAllowedCharacters() {
-        XCTAssertEqual(CollectionNaming.canonicalName(for: " Client / Alpha 🚀 "), "Client-Alpha")
+        XCTAssertEqual(CollectionNaming.canonicalName(for: " Client / Alpha 🚀 "), "client-alpha")
         XCTAssertEqual(CollectionNaming.canonicalName(for: "___"), "collection")
-        XCTAssertEqual(CollectionNaming.canonicalName(for: "snake_case"), "snake_case")
+        XCTAssertEqual(CollectionNaming.canonicalName(for: "snake_case"), "snake-case")
     }
 
     func testUniqueNamesResolveCaseInsensitiveCollisionsAndReservedNames() {
@@ -14,6 +14,6 @@ final class CollectionNamingTests: XCTestCase {
             reserved: ["agent-memory-root"]
         )
 
-        XCTAssertEqual(names, ["Foo-Bar", "Foo-Bar-2", "foo-bar-3", "agent-memory-root-2"])
+        XCTAssertEqual(names, ["foo-bar", "foo-bar-2", "foo-bar-3", "agent-memory-root-2"])
     }
 }
