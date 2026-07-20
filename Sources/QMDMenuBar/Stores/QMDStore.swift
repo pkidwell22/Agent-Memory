@@ -502,7 +502,7 @@ final class QMDStore {
         lastAutomaticUpdateAt = result.finishedAt
         defaults.set(result.finishedAt, forKey: Keys.lastAutomaticUpdateAt)
         if !result.succeeded {
-            AutomaticUpdateNotifier.notifyFailure(result.conciseOutput)
+            AutomaticUpdateNotifier.notifyFailure()
         }
     }
 
