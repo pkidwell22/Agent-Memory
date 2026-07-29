@@ -75,6 +75,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding(20)
         .frame(width: 680, height: 720)
+        .task {
+            await store.refreshStatusIfStale()
+        }
     }
 }
 

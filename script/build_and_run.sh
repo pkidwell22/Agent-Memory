@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="QMDMenuBar"
+DISPLAY_NAME="Agent Memory"
+EXECUTABLE_NAME="QMDMenuBar"
+ARTIFACT_NAME="Agent-Memory"
 BUNDLE_ID="com.mountainmeadowsystems.qmdmenubar"
 DIST_DIR="$ROOT_DIR/dist"
-APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
+APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
 CONFIGURATION="${CONFIGURATION:-release}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
@@ -16,7 +18,7 @@ show_usage() {
   cat <<USAGE
 Usage: ./script/build_and_run.sh [options]
 
-Builds the SwiftPM macOS menu bar app and stages a versioned app + ZIP in dist/.
+Builds the SwiftPM macOS menu bar app and stages a versioned app, ZIP, and DMG in dist/.
 
 Options:
   --debug                    Build the debug configuration (default: release)
@@ -91,11 +93,12 @@ if [[ -z "$BUILD_NUMBER" ]]; then
   BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 fi
 
-EXECUTABLE="$ROOT_DIR/.build/$CONFIGURATION/$APP_NAME"
-ARCHIVE="$DIST_DIR/$APP_NAME-$VERSION.zip"
+EXECUTABLE="$ROOT_DIR/.build/$CONFIGURATION/$EXECUTABLE_NAME"
+ARCHIVE="$DIST_DIR/$ARTIFACT_NAME-$VERSION.zip"
+DMG="$DIST_DIR/$ARTIFACT_NAME-$VERSION.dmg"
 
-if [[ "$NO_LAUNCH" -eq 0 ]] && pgrep -x "$APP_NAME" >/dev/null 2>&1; then
-  pkill -x "$APP_NAME" || true
+if [[ "$NO_LAUNCH" -eq 0 ]] && pgrep -x "$EXECUTABLE_NAME" >/dev/null 2>&1; then
+  pkill -x "$EXECUTABLE_NAME" || true
   sleep 0.3
 fi
 
@@ -103,8 +106,9 @@ swift build -c "$CONFIGURATION"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
-cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp "$ROOT_DIR/Sources/QMDMenuBar/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+cp "$ROOT_DIR/Sources/QMDMenuBar/Resources/QMDAperture.svg" "$APP_BUNDLE/Contents/Resources/QMDAperture.svg"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -112,13 +116,13 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>$APP_NAME</string>
+  <string>$EXECUTABLE_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>QMD Menu Bar</string>
+  <string>$DISPLAY_NAME</string>
   <key>CFBundleDisplayName</key>
-  <string>QMD Menu Bar</string>
+  <string>$DISPLAY_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -159,9 +163,33 @@ if [[ -n "$NOTARY_PROFILE" ]]; then
   /usr/bin/ditto -c -k --norsrc --keepParent "$APP_BUNDLE" "$ARCHIVE"
 fi
 
+DMG_STAGING="$(mktemp -d "$DIST_DIR/.dmg-staging.XXXXXX")"
+cleanup_dmg_staging() {
+  rm -rf "$DMG_STAGING"
+}
+trap cleanup_dmg_staging EXIT
+
+/usr/bin/ditto "$APP_BUNDLE" "$DMG_STAGING/$DISPLAY_NAME.app"
+ln -s /Applications "$DMG_STAGING/Applications"
+rm -f "$DMG"
+hdiutil create \
+  -volname "$DISPLAY_NAME" \
+  -srcfolder "$DMG_STAGING" \
+  -ov \
+  -format UDZO \
+  "$DMG"
+
+if [[ -n "$NOTARY_PROFILE" ]]; then
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  xcrun stapler validate "$DMG"
+fi
+
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+hdiutil verify "$DMG"
 echo "Built $APP_BUNDLE"
 echo "Archived $ARCHIVE"
+echo "Packaged $DMG"
 
 if [[ "$NO_LAUNCH" -eq 0 ]]; then
   /usr/bin/open -n "$APP_BUNDLE"
@@ -169,19 +197,19 @@ fi
 
 if [[ "$VERIFY" -eq 1 && "$NO_LAUNCH" -eq 0 ]]; then
   for _ in {1..20}; do
-    if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
-      echo "$APP_NAME is running"
+    if pgrep -x "$EXECUTABLE_NAME" >/dev/null 2>&1; then
+      echo "$DISPLAY_NAME is running"
       break
     fi
     sleep 0.25
   done
 
-  if ! pgrep -x "$APP_NAME" >/dev/null 2>&1; then
-    echo "$APP_NAME did not start" >&2
+  if ! pgrep -x "$EXECUTABLE_NAME" >/dev/null 2>&1; then
+    echo "$DISPLAY_NAME did not start" >&2
     exit 1
   fi
 fi
 
 if [[ "$STREAM_LOGS" -eq 1 ]]; then
-  /usr/bin/log stream --style compact --predicate "process == '$APP_NAME'"
+  /usr/bin/log stream --style compact --predicate "process == '$EXECUTABLE_NAME'"
 fi

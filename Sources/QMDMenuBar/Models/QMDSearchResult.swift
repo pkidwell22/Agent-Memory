@@ -3,9 +3,30 @@ import Foundation
 enum QMDSearchMode: String, CaseIterable, Identifiable, Sendable {
     case keyword
     case hybrid
+    case fastHybrid
 
     var id: String { rawValue }
-    var title: String { self == .keyword ? "Keyword" : "Hybrid" }
+    var title: String {
+        switch self {
+        case .keyword:
+            "Keyword"
+        case .hybrid:
+            "Hybrid"
+        case .fastHybrid:
+            "Fast"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .keyword:
+            "Fast exact-term search without a language model"
+        case .hybrid:
+            "Hybrid search with candidate reranking"
+        case .fastHybrid:
+            "Hybrid search without candidate reranking"
+        }
+    }
 }
 
 struct QMDSearchResult: Codable, Identifiable, Sendable {

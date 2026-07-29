@@ -96,6 +96,147 @@ final class QMDRunnerTests: XCTestCase {
         XCTAssertEqual(resolvedPath, "/tmp/example.md")
     }
 
+    func testHybridSearchLimitsCandidatesAndFastModeSkipsReranking() async throws {
+        let fixture = try ShellFixture(script: """
+        #!/bin/sh
+        printf '%s\n' "$@" > "$(dirname "$0")/arguments"
+        echo '[]'
+        """)
+        let runner = QMDRunner(preferences: fixture.preferences, lockRetryDelays: [])
+
+        _ = try await runner.search(query: "useful", mode: .keyword)
+        var arguments = try String(
+            contentsOf: fixture.directory.appendingPathComponent("arguments"),
+            encoding: .utf8
+        ).split(separator: "\n").map(String.init)
+        XCTAssertEqual(
+            arguments,
+            ["search", "useful", "--format", "json", "-n", "8"]
+        )
+
+        _ = try await runner.search(query: "useful", mode: .hybrid)
+        arguments = try String(
+            contentsOf: fixture.directory.appendingPathComponent("arguments"),
+            encoding: .utf8
+        ).split(separator: "\n").map(String.init)
+
+        XCTAssertEqual(
+            arguments,
+            ["query", "useful", "--format", "json", "-n", "8", "-C", "16"]
+        )
+
+        _ = try await runner.search(query: "useful", mode: .fastHybrid)
+        arguments = try String(
+            contentsOf: fixture.directory.appendingPathComponent("arguments"),
+            encoding: .utf8
+        ).split(separator: "\n").map(String.init)
+
+        XCTAssertEqual(
+            arguments,
+            ["query", "useful", "--format", "json", "-n", "8", "-C", "16", "--no-rerank"]
+        )
+    }
+
+    func testUpdateCachesCollectionCheckUntilFolderLayoutChanges() async throws {
+        let fixture = try ShellFixture(script: """
+        #!/bin/sh
+        if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
+          count_file="$(dirname "$0")/collection-list-count"
+          count=0
+          if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+          echo "$((count + 1))" > "$count_file"
+          echo 'agent-memory-root (qmd://agent-memory-root/)'
+          exit 0
+        fi
+        if [ "$1" = "collection" ] && [ "$2" = "add" ]; then
+          exit 0
+        fi
+        if [ "$1" = "update" ]; then
+          echo 'Indexed: 0 new, 0 updated, 1 unchanged, 0 removed'
+          exit 0
+        fi
+        if [ "$1" = "embed" ]; then
+          echo 'All content hashes already have embeddings.'
+          exit 0
+        fi
+        exit 2
+        """)
+        let runner = QMDRunner(preferences: fixture.preferences, lockRetryDelays: [])
+
+        _ = try await runner.run(command: .updateAndEmbed)
+        let cachedResult = try await runner.run(command: .updateAndEmbed)
+        var count = try String(
+            contentsOf: fixture.directory.appendingPathComponent("collection-list-count"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(count.trimmingCharacters(in: .whitespacesAndNewlines), "1")
+        XCTAssertFalse(cachedResult.command.contains("collection list"))
+
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: fixture.preferences.memoryRoot)
+                .appendingPathComponent("new collection", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        _ = try await runner.run(command: .updateAndEmbed)
+        count = try String(
+            contentsOf: fixture.directory.appendingPathComponent("collection-list-count"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(count.trimmingCharacters(in: .whitespacesAndNewlines), "2")
+    }
+
+    func testTimeoutUsesCancellationAwareSupervisor() async throws {
+        let fixture = try ShellFixture(script: """
+        #!/bin/sh
+        trap 'sleep 0.3; echo terminated > "$(dirname "$0")/terminated"; exit 0' TERM
+        while :; do sleep 0.1; done
+        """)
+        var preferences = fixture.preferences
+        preferences.commandTimeoutSeconds = 1
+        let runner = QMDRunner(preferences: preferences, lockRetryDelays: [])
+        let startedAt = Date()
+
+        do {
+            _ = try await runner.status()
+            XCTFail("Expected timedOut")
+        } catch let error as QMDRunnerError {
+            guard case .timedOut = error else {
+                return XCTFail("Unexpected QMDRunnerError: \(error)")
+            }
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.directory.appendingPathComponent("terminated").path
+            ),
+            "The timeout must wait for process termination before returning"
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3)
+    }
+
+    func testCancellingCommandWaitsForProcessTerminationAndThrowsCancellation() async throws {
+        let fixture = try ShellFixture(script: """
+        #!/bin/sh
+        sleep 10
+        """)
+        let runner = QMDRunner(preferences: fixture.preferences, lockRetryDelays: [])
+        let task = Task {
+            try await runner.status()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let cancelledAt = Date()
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        XCTAssertLessThan(Date().timeIntervalSince(cancelledAt), 2)
+    }
+
     func testCollectionPlanFindsAddsReplacementsAndManagedRemovals() async throws {
         let fixture = try ShellFixture(script: """
         #!/bin/sh

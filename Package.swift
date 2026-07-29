@@ -19,7 +19,8 @@ let package = Package(
             path: "Sources/QMDMenuBar",
             resources: [
                 .copy("Resources/AppIcon.png"),
-                .copy("Resources/AppIcon.icns")
+                .copy("Resources/AppIcon.icns"),
+                .copy("Resources/QMDAperture.svg")
             ]
         ),
         .testTarget(

@@ -13,7 +13,7 @@ struct AppUpdateChecker: Sendable {
         }
     }
 
-    let releasesURL = URL(string: "https://api.github.com/repos/pkidwell22/QMD/releases/latest")!
+    let releasesURL = URL(string: "https://api.github.com/repos/pkidwell22/Agent-Memory/releases/latest")!
 
     func check(currentVersion: String) async throws -> AppUpdateState {
         var request = URLRequest(url: releasesURL)

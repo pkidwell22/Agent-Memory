@@ -80,6 +80,9 @@ struct MenuBarContentView: View {
             FooterView(store: store, openSettings: openSettings)
         }
         .padding(14)
+        .task {
+            await store.refreshStatusIfStale()
+        }
     }
 }
 
@@ -89,46 +92,24 @@ private struct SearchView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                TextField("Search agent memory", text: Bindable(store).searchQuery)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .background(
-                        Color.primary.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.primary.opacity(isSearchFocused ? 0.24 : 0.12), lineWidth: 1)
-                    }
-                    .focused($isSearchFocused)
-                    .onSubmit { store.performSearch() }
-
-                Button {
-                    store.performSearch()
-                } label: {
-                    if store.isSearching {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "magnifyingglass")
-                    }
+            TextField("Search agent memory", text: Bindable(store).searchQuery)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(
+                    Color.primary.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.primary.opacity(isSearchFocused ? 0.24 : 0.12), lineWidth: 1)
                 }
-                .buttonStyle(.borderless)
-                .disabled(store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isRunning)
-                .help("Search")
-
-                Button {
-                    isSearchFocused = true
-                } label: {
-                    Image(systemName: "command")
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut("f", modifiers: .command)
-                .help("Focus search (⌘F)")
-            }
+                .focused($isSearchFocused)
+                .onSubmit { store.performSearch() }
+                .help("Press Return to search")
 
             SearchModeSelector(store: store)
+                .frame(maxWidth: .infinity)
 
             if let error = store.searchError {
                 Text(error)
@@ -145,7 +126,12 @@ private struct SearchView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 230)
+                .frame(
+                    height: min(
+                        210,
+                        max(110, CGFloat(store.searchResults.count) * 105)
+                    )
+                )
             }
         }
         .onAppear { isSearchFocused = true }
@@ -165,7 +151,7 @@ private struct SearchModeSelector: View {
                     Text(mode.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .frame(minWidth: 88, minHeight: 26)
+                        .frame(maxWidth: .infinity, minHeight: 26)
                         .background(
                             isSelected ? Color(nsColor: .darkGray) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -173,13 +159,9 @@ private struct SearchModeSelector: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .help(mode.help)
             }
         }
-        .padding(2)
-        .background(
-            Color.primary.opacity(0.10),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
     }
 }
 
@@ -235,15 +217,8 @@ private struct HeaderView: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             VStack(alignment: .center, spacing: 5) {
-                HStack(spacing: 9) {
-                    Image(systemName: store.menuBarSystemImage)
-                        .font(.title2)
-                        .foregroundStyle(store.lastError == nil ? Color.accentColor : Color.red)
-                        .frame(width: 28, height: 28)
-
-                    Text("QMD Agent Memory")
-                        .font(.headline)
-                }
+                Text("Agent Memory")
+                    .font(.headline)
 
                 Text(store.status.summary)
                     .foregroundStyle(.secondary)

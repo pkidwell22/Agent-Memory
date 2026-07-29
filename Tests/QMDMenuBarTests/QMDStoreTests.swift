@@ -96,6 +96,56 @@ final class QMDStoreTests: XCTestCase {
         XCTAssertEqual(beforeFirstRun, afterFirstRun, accuracy: 1)
     }
 
+    @MainActor
+    func testAdaptiveAutomaticUpdateDelayThrottlesLifecycleEvents() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertEqual(
+            QMDStore.adaptiveAutomaticUpdateDelay(
+                requestedDelay: 5,
+                now: now,
+                lastSuccessfulUpdate: nil
+            ),
+            5
+        )
+        XCTAssertEqual(
+            QMDStore.adaptiveAutomaticUpdateDelay(
+                requestedDelay: 5,
+                now: now,
+                lastSuccessfulUpdate: now.addingTimeInterval(-60)
+            ),
+            240
+        )
+        XCTAssertEqual(
+            QMDStore.adaptiveAutomaticUpdateDelay(
+                requestedDelay: 5,
+                now: now,
+                lastSuccessfulUpdate: now.addingTimeInterval(-600)
+            ),
+            5
+        )
+    }
+
+    func testMemoryRootMonitorObservesNestedFileChanges() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QMDMenuBarTests-\(UUID().uuidString)", isDirectory: true)
+        let nested = root.appendingPathComponent("collection/nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = nested.appendingPathComponent("note.md")
+        try Data("before".utf8).write(to: file)
+        let observed = expectation(description: "Nested file change observed")
+        let monitor = MemoryRootMonitor()
+        monitor.start(path: root.path) {
+            observed.fulfill()
+        }
+        defer { monitor.stop() }
+
+        try Data("after".utf8).write(to: file)
+        wait(for: [observed], timeout: 3)
+    }
+
     private func makeDefaults() throws -> UserDefaults {
         let suite = "QMDMenuBarTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

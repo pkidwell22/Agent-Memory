@@ -16,8 +16,8 @@ enum AutomaticUpdateNotifier {
 
     private static func addFailureNotification() {
         let content = UNMutableNotificationContent()
-        content.title = "QMD automatic update failed"
-        content.body = "Open QMD Menu Bar for details."
+        content.title = "Agent Memory automatic update failed"
+        content.body = "Open Agent Memory for details."
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)

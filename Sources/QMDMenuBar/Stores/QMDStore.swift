@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Foundation
 import Network
 import Observation
@@ -14,7 +15,11 @@ final class QMDStore {
     }
 
     var memoryRoot: String {
-        didSet { defaults.set(memoryRoot, forKey: Keys.memoryRoot) }
+        didSet {
+            defaults.set(memoryRoot, forKey: Keys.memoryRoot)
+            configureMemoryRootMonitoring()
+            scheduleAutomaticUpdateAfterEvent(requestedDelay: 5)
+        }
     }
 
     var collectionName: String {
@@ -40,7 +45,12 @@ final class QMDStore {
     var automaticUpdatesEnabled: Bool {
         didSet {
             defaults.set(automaticUpdatesEnabled, forKey: Keys.automaticUpdatesEnabled)
-            configureAutomaticTimer(initialDelay: automaticUpdatesEnabled ? 5 : nil)
+            configureMemoryRootMonitoring()
+            if automaticUpdatesEnabled {
+                scheduleAutomaticUpdateAfterEvent(requestedDelay: 5)
+            } else {
+                configureAutomaticTimer()
+            }
         }
     }
 
@@ -89,13 +99,14 @@ final class QMDStore {
     private let runnerFactory: RunnerFactory
     private var automaticTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
-    private var commandWatchdogTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var fileSystemDebounceTask: Task<Void, Never>?
     private var activeSearchID: UUID?
     private var activeRunID: UUID?
     private var cancelledRunID: UUID?
     private var wakeObserver: NSObjectProtocol?
     private let networkMonitor = NWPathMonitor()
+    private let memoryRootMonitor = MemoryRootMonitor()
     private var hasObservedNetworkState = false
 
     init(
@@ -132,6 +143,7 @@ final class QMDStore {
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
         configureLifecycleMonitoring()
+        configureMemoryRootMonitoring()
         configureAutomaticTimer(initialDelay: 5)
         if refreshOnLaunch {
             Task {
@@ -189,6 +201,14 @@ final class QMDStore {
         }
     }
 
+    func refreshStatusIfStale(maximumAge: TimeInterval = 60) async {
+        if let lastStatusRefreshAt,
+           Date().timeIntervalSince(lastStatusRefreshAt) < maximumAge {
+            return
+        }
+        await refreshStatus()
+    }
+
     func runHealthCheck() async {
         guard !isCheckingHealth, !isRefreshingStatus, !isSearching, !isPlanningCollections,
               !isCancellingCommand, activeCommand == nil else { return }
@@ -234,7 +254,6 @@ final class QMDStore {
         activeCommand = command
         activeCommandStartedAt = Date()
         lastError = nil
-        startCommandWatchdog(for: command)
 
         commandTask = Task { [weak self] in
             var shouldRefresh = false
@@ -258,7 +277,7 @@ final class QMDStore {
             switch outcome {
             case let .success(result):
                 self.record(result)
-                shouldRefresh = result.succeeded
+                shouldRefresh = result.succeeded && origin == .manual
                 if !result.succeeded {
                     self.lastError = result.conciseOutput
                 }
@@ -281,8 +300,6 @@ final class QMDStore {
             self.activeCommand = nil
             self.activeCommandStartedAt = nil
             self.commandTask = nil
-            self.commandWatchdogTask?.cancel()
-            self.commandWatchdogTask = nil
 
             if shouldRefresh {
                 if command == .doctor {
@@ -499,9 +516,10 @@ final class QMDStore {
 
     private func finishAutomaticRunIfNeeded(origin: RunOrigin, result: QMDRunResult) {
         guard origin == .automatic else { return }
-        lastAutomaticUpdateAt = result.finishedAt
-        defaults.set(result.finishedAt, forKey: Keys.lastAutomaticUpdateAt)
-        if !result.succeeded {
+        if result.succeeded {
+            lastAutomaticUpdateAt = result.finishedAt
+            defaults.set(result.finishedAt, forKey: Keys.lastAutomaticUpdateAt)
+        } else {
             AutomaticUpdateNotifier.notifyFailure()
         }
     }
@@ -513,7 +531,7 @@ final class QMDStore {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.configureAutomaticTimer(initialDelay: 5)
+                self?.scheduleAutomaticUpdateAfterEvent(requestedDelay: 5)
             }
         }
 
@@ -522,7 +540,7 @@ final class QMDStore {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.hasObservedNetworkState {
-                    self.configureAutomaticTimer(initialDelay: 5)
+                    self.scheduleAutomaticUpdateAfterEvent(requestedDelay: 5)
                 } else {
                     self.hasObservedNetworkState = true
                 }
@@ -531,26 +549,54 @@ final class QMDStore {
         networkMonitor.start(queue: DispatchQueue(label: "QMDMenuBar.NetworkMonitor"))
     }
 
-    private func startCommandWatchdog(for command: QMDCommand) {
-        commandWatchdogTask?.cancel()
-        let timeout = preferences.commandTimeoutSeconds + 15
+    private func configureMemoryRootMonitoring() {
+        fileSystemDebounceTask?.cancel()
+        fileSystemDebounceTask = nil
+        guard automaticUpdatesEnabled else {
+            memoryRootMonitor.stop()
+            return
+        }
 
-        commandWatchdogTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(timeout))
-            } catch {
-                return
+        memoryRootMonitor.start(path: memoryRoot) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleFileSystemUpdate()
             }
-            self?.expireStuckCommand(command)
         }
     }
 
-    private func expireStuckCommand(_ command: QMDCommand) {
-        guard activeCommand == command else { return }
-        cancelActiveRun(
-            exitCode: -3,
-            message: "The run was cancelled automatically because QMD did not finish within the watchdog window."
+    private func scheduleFileSystemUpdate() {
+        fileSystemDebounceTask?.cancel()
+        fileSystemDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                return
+            }
+            self?.scheduleAutomaticUpdateAfterEvent(requestedDelay: 0)
+        }
+    }
+
+    private func scheduleAutomaticUpdateAfterEvent(requestedDelay: Int) {
+        guard automaticUpdatesEnabled else { return }
+        let delay = Self.adaptiveAutomaticUpdateDelay(
+            requestedDelay: requestedDelay,
+            now: Date(),
+            lastSuccessfulUpdate: lastAutomaticUpdateAt,
+            minimumInterval: 5 * 60
         )
+        configureAutomaticTimer(initialDelay: delay)
+    }
+
+    static func adaptiveAutomaticUpdateDelay(
+        requestedDelay: Int,
+        now: Date,
+        lastSuccessfulUpdate: Date?,
+        minimumInterval: TimeInterval = 5 * 60
+    ) -> Int {
+        let requested = max(0, requestedDelay)
+        guard let lastSuccessfulUpdate else { return requested }
+        let remaining = minimumInterval - now.timeIntervalSince(lastSuccessfulUpdate)
+        return max(requested, Int(ceil(max(0, remaining))))
     }
 
     private func cancelActiveRun(exitCode: Int32, message: String) {
@@ -567,8 +613,6 @@ final class QMDStore {
         cancelledRunID = runID
         isCancellingCommand = true
         commandTask?.cancel()
-        commandWatchdogTask?.cancel()
-        commandWatchdogTask = nil
         record(result)
         activeCommand = nil
         activeCommandStartedAt = nil
@@ -610,5 +654,85 @@ final class QMDStore {
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
         static let runHistory = "runHistory"
         static let lastAutomaticUpdateAt = "lastAutomaticUpdateAt"
+    }
+}
+
+final class MemoryRootMonitor: @unchecked Sendable {
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "QMDMenuBar.MemoryRootMonitor")
+    private var stream: FSEventStreamRef?
+    private var eventHandler: (@Sendable () -> Void)?
+
+    func start(path: String, eventHandler: @escaping @Sendable () -> Void) {
+        stop()
+        guard FileManager.default.fileExists(atPath: path) else { return }
+
+        lock.lock()
+        self.eventHandler = eventHandler
+        lock.unlock()
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info else { return }
+            Unmanaged<MemoryRootMonitor>
+                .fromOpaque(info)
+                .takeUnretainedValue()
+                .handleEvent()
+        }
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
+        )
+        guard let stream = FSEventStreamCreate(
+            nil,
+            callback,
+            &context,
+            [path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            1,
+            flags
+        ) else {
+            clearEventHandler()
+            return
+        }
+
+        self.stream = stream
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            stop()
+            return
+        }
+    }
+
+    func stop() {
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            self.stream = nil
+        }
+        clearEventHandler()
+    }
+
+    private func handleEvent() {
+        lock.lock()
+        let handler = eventHandler
+        lock.unlock()
+        handler?()
+    }
+
+    private func clearEventHandler() {
+        lock.lock()
+        eventHandler = nil
+        lock.unlock()
+    }
+
+    deinit {
+        stop()
     }
 }

@@ -3,7 +3,7 @@
 ## Goal
 
 After onboarding, a selected agent client can launch the same QMD installation
-and query the same machine-local index configured by QMD Menu Bar.
+and query the same machine-local index configured by Agent Memory.
 
 MCP registration, QMD skill installation, and `AGENTS.md` instructions are
 separate operations:
@@ -74,7 +74,7 @@ change when the executable, arguments, and environment already match.
 Use an app-owned machine-local directory:
 
 ```text
-~/Library/Application Support/QMD Menu Bar/
+~/Library/Application Support/Agent Memory/
   integrations.json
   Backups/
     codex/<timestamp>/config.toml

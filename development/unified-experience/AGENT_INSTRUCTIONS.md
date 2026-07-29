@@ -2,7 +2,7 @@
 
 ## Purpose
 
-QMD Menu Bar should generate a small, portable QMD instruction block instead
+Agent Memory should generate a small, portable QMD instruction block instead
 of copying this repository's complete `Agents.md`.
 
 `AGENTS.md` is normally a file, not a folder. Global instruction locations vary

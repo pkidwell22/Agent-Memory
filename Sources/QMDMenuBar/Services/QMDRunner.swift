@@ -28,6 +28,9 @@ protocol QMDRunning: Sendable {
 
 struct QMDRunner: QMDRunning, Sendable {
     static let maximumCapturedOutputBytes = 512 * 1024
+    static let semanticCandidateLimit = 16
+    static let collectionRecheckInterval: TimeInterval = 24 * 60 * 60
+    private static let collectionCheckCache = CollectionCheckCache()
 
     let preferences: QMDPreferences
     let lockRetryDelays: [Duration]
@@ -54,7 +57,13 @@ struct QMDRunner: QMDRunning, Sendable {
 
     func search(query: String, mode: QMDSearchMode, limit: Int = 8) async throws -> [QMDSearchResult] {
         let subcommand = mode == .keyword ? "search" : "query"
-        let arguments = [subcommand, query, "--format", "json", "-n", String(limit)]
+        var arguments = [subcommand, query, "--format", "json", "-n", String(limit)]
+        if mode != .keyword {
+            arguments += ["-C", String(Self.semanticCandidateLimit)]
+        }
+        if mode == .fastHybrid {
+            arguments.append("--no-rerank")
+        }
         let result = try await run(arguments: arguments)
         try requireSuccess(result)
 
@@ -211,26 +220,26 @@ struct QMDRunner: QMDRunning, Sendable {
     func run(command: QMDCommand) async throws -> QMDRunResult {
         switch command {
         case .updateAndEmbed:
-            let collections = try await ensureAgentMemoryCollections()
+            let collections = try await ensureAgentMemoryCollectionsIfNeeded()
             guard collections.succeeded else { return collections.labeled(command.title) }
             let update = try await runWithLockRetry(arguments: ["update"])
             guard update.succeeded else { return update.labeled(command.title) }
             let embed = try await runWithLockRetry(arguments: ["embed", "--chunk-strategy", "auto"])
             return QMDRunResult(
                 actionTitle: command.title,
-                command: "\(collections.command) && \(update.command) && \(embed.command)",
+                command: joinedCommands(collections.command, update.command, embed.command),
                 exitCode: embed.exitCode,
                 output: "Update:\n\(update.output)\n\nEmbed:\n\(embed.output)",
                 startedAt: collections.startedAt,
                 finishedAt: embed.finishedAt
             )
         case .updateIndex:
-            let collections = try await ensureAgentMemoryCollections()
+            let collections = try await ensureAgentMemoryCollectionsIfNeeded()
             guard collections.succeeded else { return collections.labeled(command.title) }
             let update = try await runWithLockRetry(arguments: ["update"])
             return QMDRunResult(
                 actionTitle: command.title,
-                command: "\(collections.command) && \(update.command)",
+                command: joinedCommands(collections.command, update.command),
                 exitCode: update.exitCode,
                 output: update.output,
                 startedAt: collections.startedAt,
@@ -241,16 +250,52 @@ struct QMDRunner: QMDRunning, Sendable {
         case .forceRebuildEmbeddings:
             return try await runWithLockRetry(arguments: ["embed", "-f", "--chunk-strategy", "auto"]).labeled(command.title)
         case .ensureCollection:
-            return try await ensureAgentMemoryCollections().labeled(command.title)
+            let desiredCollections = try agentMemoryCollections()
+            let result = try await ensureAgentMemoryCollections(desiredCollections: desiredCollections)
+            if result.succeeded {
+                await markCollectionsReconciled(desiredCollections)
+            }
+            return result.labeled(command.title)
         case .doctor:
             return try await runWithLockRetry(arguments: ["doctor"]).labeled(command.title)
         }
     }
 
-    private func ensureAgentMemoryCollections() async throws -> QMDRunResult {
+    private func ensureAgentMemoryCollectionsIfNeeded() async throws -> QMDRunResult {
+        let desiredCollections = try agentMemoryCollections()
+        let fingerprint = collectionFingerprint(desiredCollections)
+        let cacheKey = normalizedPath(preferences.memoryRoot)
+        let now = Date()
+        let needsCheck = await Self.collectionCheckCache.needsCheck(
+            key: cacheKey,
+            fingerprint: fingerprint,
+            now: now,
+            maximumAge: Self.collectionRecheckInterval
+        )
+
+        guard needsCheck else {
+            return QMDRunResult(
+                actionTitle: "Ensure Collections",
+                command: "",
+                exitCode: 0,
+                output: "Collection reconciliation skipped because the agent-memory folder layout is unchanged.",
+                startedAt: now,
+                finishedAt: now
+            )
+        }
+
+        let result = try await ensureAgentMemoryCollections(desiredCollections: desiredCollections)
+        if result.succeeded {
+            await markCollectionsReconciled(desiredCollections, checkedAt: result.finishedAt)
+        }
+        return result
+    }
+
+    private func ensureAgentMemoryCollections(
+        desiredCollections: [QMDCollectionDefinition]
+    ) async throws -> QMDRunResult {
         let list = try await runWithLockRetry(arguments: ["collection", "list"])
         try requireSuccess(list)
-        let desiredCollections = try agentMemoryCollections()
         let missingCollections = desiredCollections.filter { !collectionExists($0.name, in: list.output) }
 
         if missingCollections.isEmpty {
@@ -295,6 +340,27 @@ struct QMDRunner: QMDRunning, Sendable {
             startedAt: list.startedAt,
             finishedAt: lastResult.finishedAt
         )
+    }
+
+    private func markCollectionsReconciled(
+        _ collections: [QMDCollectionDefinition],
+        checkedAt: Date = Date()
+    ) async {
+        await Self.collectionCheckCache.markChecked(
+            key: normalizedPath(preferences.memoryRoot),
+            fingerprint: collectionFingerprint(collections),
+            checkedAt: checkedAt
+        )
+    }
+
+    private func collectionFingerprint(_ collections: [QMDCollectionDefinition]) -> String {
+        collections
+            .map { "\($0.name)\u{1F}\(normalizedPath($0.path))\u{1F}\($0.pattern)" }
+            .joined(separator: "\u{1E}")
+    }
+
+    private func joinedCommands(_ commands: String...) -> String {
+        commands.filter { !$0.isEmpty }.joined(separator: " && ")
     }
 
     private func collectionExists(_ name: String, in collectionList: String) -> Bool {
@@ -438,50 +504,95 @@ struct QMDRunner: QMDRunning, Sendable {
             output.append(data)
         }
 
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(preferences.commandTimeoutSeconds)) {
-                    state.finish {
-                        outputPipe.fileHandleForReading.readabilityHandler = nil
+        let result: QMDRunResult = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<QMDRunResult, Error>) in
+                let timeoutTask = Task {
+                    do {
+                        try await Task.sleep(for: .seconds(preferences.commandTimeoutSeconds))
+                    } catch {
+                        return
+                    }
+                    state.requestTermination(.timedOut) {
                         if process.isRunning {
                             process.terminate()
                         }
-                        continuation.resume(throwing: QMDRunnerError.timedOut(
-                            command: command,
-                            seconds: preferences.commandTimeoutSeconds
-                        ))
                     }
                 }
 
                 process.terminationHandler = { terminatedProcess in
-                    state.finish {
+                    timeoutTask.cancel()
+                    state.finish { reason in
                         outputPipe.fileHandleForReading.readabilityHandler = nil
-                        continuation.resume(returning: QMDRunResult(
-                            actionTitle: arguments.first ?? "QMD",
-                            command: command,
-                            exitCode: terminatedProcess.terminationStatus,
-                            output: output.string,
-                            startedAt: startedAt,
-                            finishedAt: Date()
-                        ))
+                        switch reason {
+                        case .cancelled:
+                            continuation.resume(throwing: CancellationError())
+                        case .timedOut:
+                            continuation.resume(throwing: QMDRunnerError.timedOut(
+                                command: command,
+                                seconds: preferences.commandTimeoutSeconds
+                            ))
+                        case nil:
+                            continuation.resume(returning: QMDRunResult(
+                                actionTitle: arguments.first ?? "QMD",
+                                command: command,
+                                exitCode: terminatedProcess.terminationStatus,
+                                output: output.string,
+                                startedAt: startedAt,
+                                finishedAt: Date()
+                            ))
+                        }
                     }
                 }
 
                 do {
+                    if let reason = state.terminationReason {
+                        timeoutTask.cancel()
+                        state.finish { _ in
+                            outputPipe.fileHandleForReading.readabilityHandler = nil
+                            switch reason {
+                            case .cancelled:
+                                continuation.resume(throwing: CancellationError())
+                            case .timedOut:
+                                continuation.resume(throwing: QMDRunnerError.timedOut(
+                                    command: command,
+                                    seconds: preferences.commandTimeoutSeconds
+                                ))
+                            }
+                        }
+                        return
+                    }
                     try process.run()
+                    if state.terminationReason != nil, process.isRunning {
+                        process.terminate()
+                    }
                 } catch {
-                    state.finish {
+                    timeoutTask.cancel()
+                    state.finish { reason in
                         outputPipe.fileHandleForReading.readabilityHandler = nil
-                        continuation.resume(throwing: error)
+                        switch reason {
+                        case .cancelled:
+                            continuation.resume(throwing: CancellationError())
+                        case .timedOut:
+                            continuation.resume(throwing: QMDRunnerError.timedOut(
+                                command: command,
+                                seconds: preferences.commandTimeoutSeconds
+                            ))
+                        case nil:
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
             }
         } onCancel: {
-            outputPipe.fileHandleForReading.readabilityHandler = nil
-            if process.isRunning {
-                process.terminate()
+            state.requestTermination(.cancelled) {
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                if process.isRunning {
+                    process.terminate()
+                }
             }
         }
+        try Task.checkCancellation()
+        return result
     }
 
     private func environment() -> [String: String] {
@@ -538,10 +649,35 @@ private final class ProcessOutputBuffer: @unchecked Sendable {
 }
 
 private final class ProcessRunState: @unchecked Sendable {
+    enum TerminationReason {
+        case cancelled
+        case timedOut
+    }
+
     private let lock = NSLock()
     private var didFinish = false
+    private var requestedTermination: TerminationReason?
 
-    func finish(_ body: () -> Void) {
+    var terminationReason: TerminationReason? {
+        lock.lock()
+        let value = requestedTermination
+        lock.unlock()
+        return value
+    }
+
+    func requestTermination(_ reason: TerminationReason, _ body: () -> Void) {
+        lock.lock()
+        let shouldRunBody = !didFinish && requestedTermination == nil
+        if shouldRunBody {
+            requestedTermination = reason
+        }
+        lock.unlock()
+        if shouldRunBody {
+            body()
+        }
+    }
+
+    func finish(_ body: (TerminationReason?) -> Void) {
         lock.lock()
         guard !didFinish else {
             lock.unlock()
@@ -549,7 +685,34 @@ private final class ProcessRunState: @unchecked Sendable {
         }
 
         didFinish = true
+        let reason = requestedTermination
         lock.unlock()
-        body()
+        body(reason)
+    }
+}
+
+private actor CollectionCheckCache {
+    private struct Entry {
+        let fingerprint: String
+        let checkedAt: Date
+    }
+
+    private var entries: [String: Entry] = [:]
+
+    func needsCheck(
+        key: String,
+        fingerprint: String,
+        now: Date,
+        maximumAge: TimeInterval
+    ) -> Bool {
+        guard let entry = entries[key], entry.fingerprint == fingerprint else {
+            return true
+        }
+        let age = now.timeIntervalSince(entry.checkedAt)
+        return age < 0 || age >= maximumAge
+    }
+
+    func markChecked(key: String, fingerprint: String, checkedAt: Date) {
+        entries[key] = Entry(fingerprint: fingerprint, checkedAt: checkedAt)
     }
 }

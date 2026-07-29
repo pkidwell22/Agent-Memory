@@ -6,7 +6,7 @@ this folder are implemented and verified.
 
 ## Vision
 
-A user installs QMD Menu Bar, chooses a folder containing Markdown, and leaves
+A user installs Agent Memory, chooses a folder containing Markdown, and leaves
 onboarding with:
 
 - the folder indexed locally for keyword search;
@@ -188,7 +188,7 @@ The completion screen reports each state independently:
 - client restart still required
 - automatic maintenance enabled or skipped
 
-Provide `Open QMD Menu Bar`, `Open Settings`, and `Export Setup Report` actions.
+Provide `Open Agent Memory`, `Open Settings`, and `Export Setup Report` actions.
 The report must omit document names, queries, credentials, and private paths by
 default.
 
@@ -255,7 +255,7 @@ Use established QMD locations where possible:
 ~/.cache/qmd/                          indexes, models, and QMD runtime state
 ~/.agents/skills/qmd/                  optional global QMD skill
 ~/Library/Application Support/
-  QMD Menu Bar/                        onboarding state and integration backups
+  Agent Memory/                        onboarding state and integration backups
 ```
 
 The user-selected Markdown folder remains wherever the user chose it. The app
