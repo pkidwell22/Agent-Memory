@@ -1,21 +1,118 @@
 # Agent Memory
 
-A native macOS menu bar companion for searching and maintaining a local [QMD](https://github.com/tobi/qmd)-backed `agent-memory` vault.
+A native macOS menu bar app that turns a folder of Markdown files into a searchable, automatically maintained [QMD](https://github.com/tobi/qmd) knowledge base.
 
-## Features
+Agent Memory is the control layer around QMD. QMD owns the index, embeddings, and retrieval engine; Agent Memory maps the vault into collections, runs the right QMD commands, schedules maintenance, and presents the results in a compact menu bar interface.
 
-- Keyword, candidate-limited Hybrid, and no-rerank Fast search modes from the menu bar
-- A compact status panel with a custom aperture menu-bar icon and selected-only search-mode highlighting
-- Open the source Markdown file or copy a search result
-- Update the index, generate embeddings, or force a confirmed rebuild
-- Cancellable QMD processes with timeout, lock retry, and stale-run protection
-- First-run health check for the QMD binary, Node/Bun runtime, index, and memory folder
-- QMD Doctor action with persistent, bounded run diagnostics
-- Adaptive automatic update + embed with a configurable periodic fallback
-- Debounced folder watching, throttled wake/network recovery, failure notifications, and optional Launch at Login
-- Collection checks cached until the folder layout changes, with a daily safety recheck
-- Dry-run collection reconciliation before additions, renames, replacements, or stale removals
-- GitHub Releases update check
+## System flow
+
+```text
+Markdown vault
+    ↓
+QMD collections
+    ↓
+Keyword index + vector embeddings
+    ↓
+Keyword, Hybrid, or Fast search
+    ↓
+Open the source file or copy the result
+```
+
+## How it works, start to finish
+
+### 1. The app starts and restores its configuration
+
+Agent Memory loads its saved paths, update interval, GPU preference, launch-at-login state, previous run summaries, and last successful automatic update. It then:
+
+- starts monitoring macOS wake and network-recovery events;
+- starts watching the configured memory folder when automatic updates are enabled;
+- schedules the first automatic maintenance run when automatic updates are enabled;
+- runs a health check; and
+- checks GitHub Releases for a newer app version.
+
+Opening the menu refreshes QMD status when the displayed status is more than 60 seconds old. The header shows the current document and vector counts, the last check time, and the age of the newest indexed content.
+
+### 2. The health check verifies the local QMD environment
+
+Before relying on the index, Agent Memory checks:
+
+- whether the configured QMD binary exists and is executable;
+- which Node or Bun runtime the configured `PATH` resolves;
+- whether QMD can report its version and status;
+- whether the memory root is readable and the working directory exists;
+- whether the QMD index exists and is readable and writable; and
+- which executable, runtime, and index paths are actually in use.
+
+Failures include a suggested remediation in Settings. QMD Doctor is also available for deeper QMD diagnostics.
+
+### 3. The Markdown vault becomes a set of QMD collections
+
+The configured memory root is mapped into collections before an index update:
+
+- Markdown files directly inside the root become the reserved `agent-memory-root` collection with the `*.md` mask.
+- Every immediate subfolder becomes its own uniquely named QMD collection.
+- Each subfolder uses the configured recursive file mask, which defaults to `**/*.md`.
+
+Collection names are normalized to QMD-safe names and disambiguated when folder names collide. Agent Memory caches a successful collection check, repeats it when the folder layout changes, and performs a safety recheck after 24 hours.
+
+`Review Collections` builds a dry-run reconciliation plan before changing existing collections. The plan identifies additions, renames, replacements, and stale app-managed collections; the user decides whether to apply it.
+
+### 4. Maintenance updates the index and embeddings
+
+The primary `Update + Embed` action runs this pipeline:
+
+1. Ensure the expected collections exist when a collection check is due.
+2. Run `qmd update` to index new, changed, and removed Markdown files.
+3. Run `qmd embed --chunk-strategy auto` to generate any missing vector embeddings.
+4. Record a bounded result summary with the duration, exit status, and aggregate index counts.
+5. Refresh the visible QMD status after a successful manual run.
+
+The other maintenance actions expose individual parts of the pipeline:
+
+| Action | Behavior |
+| --- | --- |
+| `Update Index` | Reconcile collections when needed, then run `qmd update`. |
+| `Generate Embeddings` | Generate missing embeddings with automatic chunking. |
+| `Force Rebuild` | Confirm with the user, then regenerate all embeddings with `qmd embed -f`. |
+| `Review Collections` | Preview collection changes before applying them. |
+
+Only one maintenance, health, status, collection-planning, or search operation runs at a time. QMD database-lock failures are retried, commands have a configurable timeout, and cancellation waits for the child process to terminate before another run can begin.
+
+### 5. Search selects the appropriate QMD retrieval path
+
+Entering a query and pressing Return cancels any older in-flight search and requests up to eight JSON results from QMD.
+
+| Mode | QMD behavior | Best for |
+| --- | --- | --- |
+| `Keyword` | Runs `qmd search` without a language model. | Exact terms, filenames, identifiers, and fast lookups. |
+| `Hybrid` | Runs `qmd query` with a 16-result semantic candidate pool and reranking. | The highest-quality conceptual retrieval. |
+| `Fast` | Runs the same candidate-limited hybrid query with `--no-rerank`. | Semantic retrieval with lower latency. |
+
+Agent Memory decodes the QMD results and displays the title, collection path, and snippet. Opening a result asks QMD for the full source path and opens the Markdown file in its default macOS app. Copying a result places its title, QMD path, and snippet on the clipboard.
+
+### 6. Automatic maintenance keeps the index current
+
+When automatic updates are enabled, Agent Memory runs the same `Update + Embed` pipeline in response to:
+
+- the configured periodic interval, from 5 to 720 minutes;
+- debounced filesystem changes anywhere under the memory root;
+- the Mac waking from sleep; and
+- network connectivity returning after an observed outage.
+
+Event-triggered runs are throttled so successful automatic runs stay at least five minutes apart. If another operation is busy, the scheduler retries in 60 seconds. The timestamp advances only after a successful automatic run; failures remain visible in the run panel and can trigger a macOS notification.
+
+### 7. Diagnostics preserve useful evidence without unbounded logs
+
+The menu shows the active or most recent run, its duration, exit code, and concise index totals. Settings adds:
+
+- health-check results and remediation;
+- document, vector, collection-file, and freshness diagnostics;
+- recent bounded run summaries;
+- QMD Doctor;
+- collection reconciliation; and
+- app update status.
+
+Captured process output is bounded, and persisted history stores summaries rather than unlimited raw command output.
 
 ## Defaults
 
@@ -25,7 +122,7 @@ A native macOS menu bar companion for searching and maintaining a local [QMD](ht
 - Vault: `~/Library/Mobile Documents/com~apple~CloudDocs/agent-memory`
 - File mask: `**/*.md`
 
-Paths are configurable in Settings. The health check shows the resolved QMD executable and the exact Node/Bun runtime selected by the app's PATH, which is useful when native Node modules were built for a different ABI.
+All paths and maintenance preferences are configurable in Settings. GPU acceleration is enabled by default; disabling it makes the runner set `QMD_LLAMA_GPU=false` for QMD processes.
 
 ## Development
 
