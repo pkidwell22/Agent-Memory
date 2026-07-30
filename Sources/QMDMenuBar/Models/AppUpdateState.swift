@@ -1,16 +1,17 @@
 import Foundation
 
-struct AppRelease: Sendable {
-    let version: String
+struct AppUpdate: Sendable {
+    let identifier: String
+    let displayBuild: String
     let pageURL: URL
     let publishedAt: Date?
+    let summary: String
 }
 
 enum AppUpdateState: Sendable {
     case idle
     case checking
-    case noPublishedReleases
-    case current(latestVersion: String)
-    case available(AppRelease)
+    case current(latestBuild: String)
+    case available(AppUpdate)
     case failed(String)
 }

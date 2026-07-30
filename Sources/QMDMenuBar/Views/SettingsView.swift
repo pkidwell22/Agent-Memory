@@ -90,25 +90,30 @@ private struct UpdatesSection: View {
                 "Installed version",
                 value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
             )
+            LabeledContent(
+                "Installed build",
+                value: installedBuild
+            )
 
             switch store.updateState {
             case .idle:
-                Text("Check GitHub Releases for a newer signed build.")
+                Text("Check GitHub main for a newer app build.")
                     .foregroundStyle(.secondary)
             case .checking:
                 Label("Checking…", systemImage: "arrow.triangle.2.circlepath")
-            case .noPublishedReleases:
-                Text("No GitHub Releases have been published yet.")
-                    .foregroundStyle(.secondary)
-            case let .current(latestVersion):
-                Label("Up to date (\(latestVersion))", systemImage: "checkmark.circle.fill")
+            case let .current(latestBuild):
+                Label("Up to date (\(latestBuild))", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-            case let .available(release):
+            case let .available(update):
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Version \(release.version) is available", systemImage: "arrow.down.circle.fill")
+                    Label("Build \(update.displayBuild) is available", systemImage: "arrow.down.circle.fill")
                         .foregroundStyle(.blue)
-                    Button("Open Release Page") {
-                        store.openReleasePage(release)
+                    Text(update.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Button("Open Latest Commit") {
+                        store.openUpdatePage(update)
                     }
                 }
             case let .failed(message):
@@ -124,6 +129,11 @@ private struct UpdatesSection: View {
             }
             .disabled(store.updateState.isChecking)
         }
+    }
+
+    private var installedBuild: String {
+        let commit = Bundle.main.object(forInfoDictionaryKey: "AgentMemoryGitCommit") as? String ?? ""
+        return commit.isEmpty ? "Development" : String(commit.prefix(7))
     }
 }
 

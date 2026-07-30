@@ -384,7 +384,18 @@ private struct FooterView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let error = store.lastError, !error.isEmpty {
+            if case let .available(update) = store.updateState {
+                Button {
+                    store.openUpdatePage(update)
+                } label: {
+                    Label("Update available · \(update.displayBuild)", systemImage: "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("Open the latest Agent Memory commit on GitHub")
+            } else if let error = store.lastError, !error.isEmpty {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)

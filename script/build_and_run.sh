@@ -13,6 +13,7 @@ SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 VERSION="${VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
+GIT_COMMIT="${GIT_COMMIT:-}"
 
 show_usage() {
   cat <<USAGE
@@ -92,6 +93,13 @@ fi
 if [[ -z "$BUILD_NUMBER" ]]; then
   BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 fi
+if [[ -z "$GIT_COMMIT" ]]; then
+  GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
+if [[ ! "$GIT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Unable to determine a full Git commit for AgentMemoryGitCommit" >&2
+  exit 2
+fi
 
 EXECUTABLE="$ROOT_DIR/.build/$CONFIGURATION/$EXECUTABLE_NAME"
 ARCHIVE="$DIST_DIR/$ARTIFACT_NAME-$VERSION.zip"
@@ -129,6 +137,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
   <string>$VERSION</string>
   <key>CFBundleVersion</key>
   <string>$BUILD_NUMBER</string>
+  <key>AgentMemoryGitCommit</key>
+  <string>$GIT_COMMIT</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>NSHighResolutionCapable</key>

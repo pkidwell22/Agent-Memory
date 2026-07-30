@@ -97,6 +97,25 @@ final class QMDStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuHeightStaysStableWhenAppUpdateBecomesAvailable() throws {
+        let store = QMDStore(defaults: try makeDefaults(), refreshOnLaunch: false)
+        let currentHeight = menuHeight(store: store)
+
+        store.updateState = .available(
+            AppUpdate(
+                identifier: "2222222222222222222222222222222222222222",
+                displayBuild: "2222222",
+                pageURL: URL(string: "https://github.com/pkidwell22/Agent-Memory/commit/2222222")!,
+                publishedAt: nil,
+                summary: "Latest change"
+            )
+        )
+        let updateHeight = menuHeight(store: store)
+
+        XCTAssertEqual(currentHeight, updateHeight, accuracy: 1)
+    }
+
+    @MainActor
     func testAdaptiveAutomaticUpdateDelayThrottlesLifecycleEvents() {
         let now = Date(timeIntervalSince1970: 1_000)
 

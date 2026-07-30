@@ -28,7 +28,7 @@ Agent Memory loads its saved paths, update interval, GPU preference, launch-at-l
 - starts watching the configured memory folder when automatic updates are enabled;
 - schedules the first automatic maintenance run when automatic updates are enabled;
 - runs a health check; and
-- checks GitHub Releases for a newer app version.
+- checks the latest commit on GitHub's `main` branch for a newer app build.
 
 Opening the menu refreshes QMD status when the displayed status is more than 60 seconds old. The header shows the current document and vector counts, the last check time, and the age of the newest indexed content.
 
@@ -101,7 +101,13 @@ When automatic updates are enabled, Agent Memory runs the same `Update + Embed` 
 
 Event-triggered runs are throttled so successful automatic runs stay at least five minutes apart. If another operation is busy, the scheduler retries in 60 seconds. The timestamp advances only after a successful automatic run; failures remain visible in the run panel and can trigger a macOS notification.
 
-### 7. Diagnostics preserve useful evidence without unbounded logs
+### 7. GitHub pushes prompt installed apps to update
+
+Every packaged build records the exact Git commit it contains. Agent Memory compares that commit with the repository's `main` branch when the app launches and once per hour while it remains open.
+
+After a new commit is pushed, each Mac shows a persistent update link in the menu footer and sends one macOS notification for that commit. The link opens the exact GitHub commit so the change can be reviewed. This is an update prompt, not a silent installer: replacing the installed app remains an explicit action until a signed and notarized distribution feed is configured.
+
+### 8. Diagnostics preserve useful evidence without unbounded logs
 
 The menu shows the active or most recent run, its duration, exit code, and concise index totals. Settings adds:
 
@@ -156,7 +162,7 @@ Homebrew installs the app as `/Applications/Agent Memory.app`. Development build
 
 ## Release builds
 
-The packaging script creates `dist/Agent Memory.app`, a versioned `Agent-Memory` ZIP, and a drag-to-Applications DMG. It derives the marketing version from the latest `v*` Git tag (falling back to `0.2.0`) and the build number from the Git commit count.
+The packaging script creates `dist/Agent Memory.app`, a versioned `Agent-Memory` ZIP, and a drag-to-Applications DMG. It derives the marketing version from the latest `v*` Git tag (falling back to `0.2.0`), the build number from the Git commit count, and embeds the full Git commit for push-aware update checks.
 
 ```bash
 ./script/build_and_run.sh --release --no-launch
@@ -177,7 +183,7 @@ To notarize, first store App Store Connect credentials in a `notarytool` keychai
 --notarize-profile "qmd-menu-bar-notary"
 ```
 
-Unsigned local builds receive an ad-hoc signature. Signed releases can be published as GitHub Releases; the app's Settings screen links users to the latest release when a newer version is available.
+Unsigned local builds receive an ad-hoc signature. Signed releases can be published as GitHub Releases. Independently of release tags, the app checks GitHub's `main` branch on launch and hourly so every pushed commit can prompt installed copies.
 
 Tagged releases are built by `.github/workflows/release.yml`. The workflow requires these GitHub Actions secrets:
 

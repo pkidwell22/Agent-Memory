@@ -101,6 +101,7 @@ final class QMDStore {
     private var commandTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var fileSystemDebounceTask: Task<Void, Never>?
+    private var appUpdateTask: Task<Void, Never>?
     private var activeSearchID: UUID?
     private var activeRunID: UUID?
     private var cancelledRunID: UUID?
@@ -146,6 +147,7 @@ final class QMDStore {
         configureMemoryRootMonitoring()
         configureAutomaticTimer(initialDelay: 5)
         if refreshOnLaunch {
+            configureAppUpdateTimer()
             Task {
                 await runHealthCheck()
                 await checkForUpdates()
@@ -469,17 +471,42 @@ final class QMDStore {
     }
 
     func checkForUpdates() async {
+        if case .checking = updateState { return }
         updateState = .checking
-        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let currentCommit = Bundle.main.object(forInfoDictionaryKey: "AgentMemoryGitCommit") as? String ?? ""
         do {
-            updateState = try await AppUpdateChecker().check(currentVersion: currentVersion)
+            let state = try await AppUpdateChecker().check(currentCommit: currentCommit)
+            updateState = state
+            if case let .available(update) = state {
+                notifyAboutUpdateIfNeeded(update)
+            }
         } catch {
             updateState = .failed(error.localizedDescription)
         }
     }
 
-    func openReleasePage(_ release: AppRelease) {
-        NSWorkspace.shared.open(release.pageURL)
+    func openUpdatePage(_ update: AppUpdate) {
+        NSWorkspace.shared.open(update.pageURL)
+    }
+
+    private func configureAppUpdateTimer() {
+        appUpdateTask?.cancel()
+        appUpdateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(3_600))
+                } catch {
+                    break
+                }
+                await self?.checkForUpdates()
+            }
+        }
+    }
+
+    private func notifyAboutUpdateIfNeeded(_ update: AppUpdate) {
+        guard defaults.string(forKey: Keys.lastNotifiedAppUpdate) != update.identifier else { return }
+        defaults.set(update.identifier, forKey: Keys.lastNotifiedAppUpdate)
+        AppUpdateNotifier.notifyAvailable(update)
     }
 
     private func configureAutomaticTimer(initialDelay: Int? = nil) {
@@ -654,6 +681,7 @@ final class QMDStore {
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
         static let runHistory = "runHistory"
         static let lastAutomaticUpdateAt = "lastAutomaticUpdateAt"
+        static let lastNotifiedAppUpdate = "lastNotifiedAppUpdate"
     }
 }
 

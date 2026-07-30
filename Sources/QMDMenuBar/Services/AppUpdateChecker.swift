@@ -1,43 +1,76 @@
 import Foundation
 
 struct AppUpdateChecker: Sendable {
-    private struct GitHubRelease: Decodable {
-        let tagName: String
+    typealias DataLoader = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+
+    private struct GitHubCommit: Decodable {
+        struct CommitDetails: Decodable {
+            struct Committer: Decodable {
+                let date: Date?
+            }
+
+            let message: String
+            let committer: Committer
+        }
+
+        let sha: String
         let htmlURL: URL
-        let publishedAt: Date?
+        let commit: CommitDetails
 
         enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"
+            case sha
             case htmlURL = "html_url"
-            case publishedAt = "published_at"
+            case commit
         }
     }
 
-    let releasesURL = URL(string: "https://api.github.com/repos/pkidwell22/Agent-Memory/releases/latest")!
+    private let dataLoader: DataLoader
+    let latestCommitURL = URL(string: "https://api.github.com/repos/pkidwell22/Agent-Memory/commits/main")!
 
-    func check(currentVersion: String) async throws -> AppUpdateState {
-        var request = URLRequest(url: releasesURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("QMDMenuBar/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+    init(dataLoader: @escaping DataLoader = { request in
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        if http.statusCode == 404 {
-            return .noPublishedReleases
-        }
+        return (data, http)
+    }) {
+        self.dataLoader = dataLoader
+    }
+
+    func check(currentCommit: String) async throws -> AppUpdateState {
+        var request = URLRequest(url: latestCommitURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Agent-Memory/\(shortIdentifier(currentCommit))", forHTTPHeaderField: "User-Agent")
+        let (data, http) = try await dataLoader(request)
         guard http.statusCode == 200 else {
             let status = http.statusCode
-            throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "GitHub Releases returned HTTP \(status)."])
+            throw URLError(
+                .badServerResponse,
+                userInfo: [NSLocalizedDescriptionKey: "GitHub returned HTTP \(status) while checking the latest build."]
+            )
         }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let release = try decoder.decode(GitHubRelease.self, from: data)
-        let latest = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-        if latest.compare(currentVersion, options: .numeric) == .orderedDescending {
-            return .available(AppRelease(version: latest, pageURL: release.htmlURL, publishedAt: release.publishedAt))
+        let latest = try decoder.decode(GitHubCommit.self, from: data)
+        let latestIdentifier = latest.sha.lowercased()
+        if latestIdentifier == currentCommit.lowercased() {
+            return .current(latestBuild: shortIdentifier(latestIdentifier))
         }
-        return .current(latestVersion: latest)
+
+        return .available(
+            AppUpdate(
+                identifier: latestIdentifier,
+                displayBuild: shortIdentifier(latestIdentifier),
+                pageURL: latest.htmlURL,
+                publishedAt: latest.commit.committer.date,
+                summary: latest.commit.message.components(separatedBy: .newlines).first ?? "New Agent Memory build"
+            )
+        )
+    }
+
+    private func shortIdentifier(_ identifier: String) -> String {
+        if identifier.isEmpty { return "development" }
+        return String(identifier.prefix(7))
     }
 }
