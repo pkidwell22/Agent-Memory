@@ -153,9 +153,16 @@ private struct SearchModeSelector: View {
                         .foregroundStyle(isSelected ? Color.white : Color.primary)
                         .frame(maxWidth: .infinity, minHeight: 26)
                         .background(
-                            isSelected ? Color(nsColor: .darkGray) : Color.clear,
+                            isSelected ? Color(white: 0.25, opacity: 0.94) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(
+                                    isSelected ? Color.white.opacity(0.12) : Color.clear,
+                                    lineWidth: 1
+                                )
+                        }
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
