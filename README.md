@@ -13,7 +13,7 @@ QMD collections
     ↓
 Keyword index + vector embeddings
     ↓
-Keyword, Hybrid, or Fast search
+Keyword, Fast, or Deep search, optionally scoped by collection
     ↓
 Open the source file or copy the result
 ```
@@ -80,15 +80,15 @@ Only one maintenance, health, status, collection-planning, or search operation r
 
 ### 5. Search selects the appropriate QMD retrieval path
 
-Entering a query and pressing Return cancels any older in-flight search and requests up to eight JSON results from QMD.
+Entering a query and pressing Return cancels any older in-flight search and requests up to eight JSON results from QMD. Search can cover every non-empty collection or be scoped to one collection; the selected mode and collection persist between launches, and a removed collection automatically falls back to `All Collections`.
 
 | Mode | QMD behavior | Best for |
 | --- | --- | --- |
 | `Keyword` | Runs `qmd search` without a language model. | Exact terms, filenames, identifiers, and fast lookups. |
-| `Hybrid` | Runs `qmd query` with a 16-result semantic candidate pool and reranking. | The highest-quality conceptual retrieval. |
-| `Fast` | Runs the same candidate-limited hybrid query with `--no-rerank`. | Semantic retrieval with lower latency. |
+| `Fast` | Routes exact-looking input to `qmd search`; otherwise sends direct `vec:` + `lex:` retrieval to `qmd query` with a 16-result candidate pool, bypassing query expansion and reranking. | Low-latency exploratory retrieval without waiting for either language-model stage. |
+| `Deep` | Runs `qmd query` with a 16-result candidate pool and reranking. | Difficult conceptual retrieval, preferably scoped to a relevant collection. |
 
-Agent Memory decodes the QMD results and displays the title, collection path, and snippet. Opening a result asks QMD for the full source path and opens the Markdown file in its default macOS app. Copying a result places its title, QMD path, and snippet on the clipboard.
+`Keyword` remains the default so opening the menu does not silently opt into model latency. Agent Memory decodes the QMD results and displays the title, collection path, and snippet. Opening a result asks QMD for the full source path and opens the Markdown file in its default macOS app. Copying a result places its title, QMD path, and snippet on the clipboard.
 
 ### 6. Automatic maintenance keeps the index current
 
