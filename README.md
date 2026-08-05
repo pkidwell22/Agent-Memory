@@ -85,8 +85,8 @@ Entering a query and pressing Return cancels any older in-flight search and requ
 | Mode | QMD behavior | Best for |
 | --- | --- | --- |
 | `Keyword` | Runs `qmd search` without a language model. | Exact terms, filenames, identifiers, and fast lookups. |
-| `Hybrid` | Runs `qmd query` with a 16-result semantic candidate pool and reranking. | The highest-quality conceptual retrieval. |
-| `Fast` | Runs the same candidate-limited hybrid query with `--no-rerank`. | Semantic retrieval with lower latency. |
+| `Fast` | Routes exact-looking input to `qmd search`; otherwise sends direct `vec:` + `lex:` retrieval to `qmd query` with a 16-result candidate pool, bypassing query expansion and reranking. | Low-latency exploratory retrieval without either language-model stage. |
+| `Deep` | Runs `qmd query` with a 16-result semantic candidate pool, query expansion, and reranking. | The highest-quality conceptual retrieval, preferably scoped to one collection. |
 
 Agent Memory decodes the QMD results and displays the title, collection path, and snippet. Opening a result asks QMD for the full source path and opens the Markdown file in its default macOS app. Copying a result places its title, QMD path, and snippet on the clipboard.
 

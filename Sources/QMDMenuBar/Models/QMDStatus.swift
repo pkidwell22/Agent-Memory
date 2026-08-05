@@ -1,5 +1,12 @@
 import Foundation
 
+struct QMDCollectionStatus: Identifiable, Equatable, Sendable {
+    let name: String
+    var files: Int?
+
+    var id: String { name }
+}
+
 struct QMDStatus: Sendable {
     var indexPath: String = ""
     var totalDocuments: Int?
@@ -7,6 +14,7 @@ struct QMDStatus: Sendable {
     var updated: String?
     var collectionName: String?
     var collectionFiles: Int?
+    var collections: [QMDCollectionStatus] = []
     var rawText: String = ""
 
     var summary: String {
@@ -39,13 +47,21 @@ struct QMDStatus: Sendable {
                     .trimmingCharacters(in: .whitespaces)
             } else if trimmed.contains("(qmd://"), trimmed.hasSuffix("/)") {
                 activeCollection = trimmed.components(separatedBy: " ").first
+                if let activeCollection {
+                    status.collections.append(QMDCollectionStatus(name: activeCollection, files: nil))
+                }
                 if activeCollection == preferredCollection {
                     status.collectionName = preferredCollection
                 }
             } else if trimmed.hasPrefix("Files:"), let active = activeCollection {
-                if active == preferredCollection, let files = firstInteger(in: trimmed) {
-                    status.collectionFiles = files
-                    status.collectionName = preferredCollection
+                if let files = firstInteger(in: trimmed) {
+                    if let index = status.collections.lastIndex(where: { $0.name == active }) {
+                        status.collections[index].files = files
+                    }
+                    if active == preferredCollection {
+                        status.collectionFiles = files
+                        status.collectionName = preferredCollection
+                    }
                 }
                 activeCollection = nil
             }

@@ -6,6 +6,70 @@ import XCTest
 
 final class QMDStoreTests: XCTestCase {
     @MainActor
+    func testSearchModeAndCollectionPersist() throws {
+        let defaults = try makeDefaults()
+        let store = QMDStore(defaults: defaults, refreshOnLaunch: false)
+        store.searchMode = .deep
+        store.searchCollection = "qmd"
+
+        let restored = QMDStore(defaults: defaults, refreshOnLaunch: false)
+
+        XCTAssertEqual(restored.searchMode, .deep)
+        XCTAssertEqual(restored.searchCollection, "qmd")
+    }
+
+    @MainActor
+    func testRapidSearchesCancelEarlierWorkAndOnlyPublishLatestResults() async throws {
+        let runner = SearchStressRunner()
+        let store = QMDStore(
+            defaults: try makeDefaults(),
+            runnerFactory: { _ in runner },
+            refreshOnLaunch: false
+        )
+        store.searchMode = .fast
+        store.searchCollection = "qmd"
+
+        store.searchQuery = "first"
+        store.performSearch()
+        try await waitUntil { await runner.startedCount == 1 }
+
+        store.searchQuery = "second"
+        store.performSearch()
+        try await waitUntil { await runner.startedCount == 2 }
+
+        store.searchQuery = "final"
+        store.performSearch()
+        try await waitUntil {
+            !store.isSearching && store.searchResults.first?.displayTitle == "final"
+        }
+
+        let cancellationCount = await runner.cancellationCount
+        XCTAssertEqual(cancellationCount, 2)
+        let calls = await runner.calls
+        XCTAssertEqual(calls.map(\.query), ["first", "second", "final"])
+        XCTAssertTrue(calls.allSatisfy { $0.mode == .fast && $0.collection == "qmd" && $0.limit == 8 })
+        XCTAssertNil(store.searchError)
+    }
+
+    @MainActor
+    func testLargeCollectionSetFiltersEmptyEntriesAndSortsDeterministically() throws {
+        let store = QMDStore(defaults: try makeDefaults(), refreshOnLaunch: false)
+        store.status.collections = (0..<150).map { index in
+            QMDCollectionStatus(
+                name: String(format: "collection-%03d-with-a-deliberately-long-name", 149 - index),
+                files: index.isMultiple(of: 5) ? 0 : index + 1
+            )
+        }
+
+        let collections = store.searchableCollections
+
+        XCTAssertEqual(collections.count, 120)
+        XCTAssertTrue(collections.allSatisfy { ($0.files ?? 0) > 0 })
+        XCTAssertEqual(collections.map(\.name), collections.map(\.name).sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        XCTAssertTrue(menuHeight(store: store).isFinite)
+    }
+
+    @MainActor
     func testCancellationWaitsForTerminationBeforeAllowingNewRun() async throws {
         let defaults = try makeDefaults()
         let runner = CancellationRunner()
@@ -200,6 +264,13 @@ private actor CancellationRunner: QMDRunning {
 
     func status() async throws -> QMDStatus { QMDStatus() }
 
+    func search(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String?,
+        limit: Int
+    ) async throws -> [QMDSearchResult] { [] }
+
     func currentCancellationCount() -> Int { cancellationCount }
     func currentStartedCount() -> Int { startedCount }
 
@@ -235,6 +306,13 @@ private struct ImmediateRunner: QMDRunning {
 
     func status() async throws -> QMDStatus { QMDStatus() }
 
+    func search(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String?,
+        limit: Int
+    ) async throws -> [QMDSearchResult] { [] }
+
     func run(command: QMDCommand) async throws -> QMDRunResult {
         QMDRunResult(
             actionTitle: command.title,
@@ -244,5 +322,50 @@ private struct ImmediateRunner: QMDRunning {
             startedAt: Date(),
             finishedAt: Date()
         )
+    }
+}
+
+private actor SearchStressRunner: QMDRunning {
+    struct Call: Sendable {
+        let query: String
+        let mode: QMDSearchMode
+        let collection: String?
+        let limit: Int
+    }
+
+    private(set) var calls: [Call] = []
+    private(set) var cancellationCount = 0
+    var startedCount: Int { calls.count }
+
+    func status() async throws -> QMDStatus { QMDStatus() }
+
+    func run(command: QMDCommand) async throws -> QMDRunResult {
+        throw CancellationError()
+    }
+
+    func search(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String?,
+        limit: Int
+    ) async throws -> [QMDSearchResult] {
+        calls.append(Call(query: query, mode: mode, collection: collection, limit: limit))
+
+        do {
+            try await Task.sleep(for: query == "final" ? .milliseconds(20) : .seconds(10))
+        } catch {
+            cancellationCount += 1
+            throw error
+        }
+
+        return [QMDSearchResult(
+            docid: "#\(query)",
+            score: 1,
+            file: "qmd://qmd/\(query).md",
+            line: 1,
+            title: query,
+            context: "Stress test",
+            snippet: query
+        )]
     }
 }

@@ -85,7 +85,18 @@ final class QMDStore {
     var launchAtLoginEnabled = false
     var launchAtLoginError: String?
     var searchQuery = ""
-    var searchMode: QMDSearchMode = .keyword
+    var searchMode: QMDSearchMode = .keyword {
+        didSet { defaults.set(searchMode.rawValue, forKey: Keys.searchMode) }
+    }
+    var searchCollection: String? = nil {
+        didSet {
+            if let searchCollection {
+                defaults.set(searchCollection, forKey: Keys.searchCollection)
+            } else {
+                defaults.removeObject(forKey: Keys.searchCollection)
+            }
+        }
+    }
     var searchResults: [QMDSearchResult] = []
     var searchError: String?
     var isSearching = false
@@ -138,6 +149,8 @@ final class QMDStore {
         automaticUpdatesEnabled = defaults.object(forKey: Keys.automaticUpdatesEnabled) as? Bool ?? fallback.automaticUpdatesEnabled
         let savedMinutes = defaults.integer(forKey: Keys.automaticUpdateMinutes)
         automaticUpdateMinutes = savedMinutes > 0 ? savedMinutes : fallback.automaticUpdateMinutes
+        searchMode = defaults.string(forKey: Keys.searchMode).flatMap(QMDSearchMode.init(rawValue:)) ?? .keyword
+        searchCollection = defaults.string(forKey: Keys.searchCollection)
         runHistory = Self.loadRunHistory(from: defaults)
         lastResult = runHistory.first
         lastAutomaticUpdateAt = defaults.object(forKey: Keys.lastAutomaticUpdateAt) as? Date
@@ -174,6 +187,16 @@ final class QMDStore {
         activeCommand != nil || isCancellingCommand || isRefreshingStatus || isCheckingHealth || isSearching || isPlanningCollections
     }
 
+    var searchableCollections: [QMDCollectionStatus] {
+        status.collections
+            .filter { ($0.files ?? 0) > 0 }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    var searchScopeTitle: String {
+        searchCollection ?? "All Collections"
+    }
+
     var isCommandRunning: Bool {
         activeCommand != nil
     }
@@ -195,7 +218,7 @@ final class QMDStore {
         defer { isRefreshingStatus = false }
 
         do {
-            status = try await runnerFactory(preferences).status()
+            applyStatus(try await runnerFactory(preferences).status())
             lastStatusRefreshAt = Date()
             lastError = nil
         } catch {
@@ -218,7 +241,7 @@ final class QMDStore {
         let report = await QMDHealthChecker(preferences: preferences).check()
         healthReport = report
         if let checkedStatus = report.status {
-            status = checkedStatus
+            applyStatus(checkedStatus)
             lastStatusRefreshAt = report.checkedAt
         }
         if report.hasFailures {
@@ -227,6 +250,16 @@ final class QMDStore {
             lastError = nil
         }
         isCheckingHealth = false
+    }
+
+    private func applyStatus(_ newStatus: QMDStatus) {
+        status = newStatus
+        if let searchCollection,
+           !newStatus.collections.contains(where: {
+               $0.name == searchCollection && ($0.files ?? 0) > 0
+           }) {
+            self.searchCollection = nil
+        }
     }
 
     @discardableResult
@@ -404,11 +437,17 @@ final class QMDStore {
         searchError = nil
         isSearching = true
         let mode = searchMode
-        let runner = QMDRunner(preferences: preferences)
+        let collection = searchCollection
+        let runner = runnerFactory(preferences)
 
         searchTask = Task { [weak self] in
             do {
-                let results = try await runner.search(query: query, mode: mode)
+                let results = try await runner.search(
+                    query: query,
+                    mode: mode,
+                    collection: collection,
+                    limit: 8
+                )
                 guard !Task.isCancelled, self?.activeSearchID == searchID else { return }
                 self?.searchResults = results
             } catch is CancellationError {
@@ -679,6 +718,8 @@ final class QMDStore {
         static let pathEnvironment = "pathEnvironment"
         static let automaticUpdatesEnabled = "automaticUpdatesEnabled"
         static let automaticUpdateMinutes = "automaticUpdateMinutes"
+        static let searchMode = "searchMode"
+        static let searchCollection = "searchCollection"
         static let runHistory = "runHistory"
         static let lastAutomaticUpdateAt = "lastAutomaticUpdateAt"
         static let lastNotifiedAppUpdate = "lastNotifiedAppUpdate"

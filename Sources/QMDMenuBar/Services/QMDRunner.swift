@@ -24,6 +24,12 @@ enum QMDRunnerError: LocalizedError, Equatable {
 protocol QMDRunning: Sendable {
     func status() async throws -> QMDStatus
     func run(command: QMDCommand) async throws -> QMDRunResult
+    func search(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String?,
+        limit: Int
+    ) async throws -> [QMDSearchResult]
 }
 
 struct QMDRunner: QMDRunning, Sendable {
@@ -55,30 +61,91 @@ struct QMDRunner: QMDRunning, Sendable {
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func search(query: String, mode: QMDSearchMode, limit: Int = 8) async throws -> [QMDSearchResult] {
-        let subcommand = mode == .keyword ? "search" : "query"
-        var arguments = [subcommand, query, "--format", "json", "-n", String(limit)]
-        if mode != .keyword {
-            arguments += ["-C", String(Self.semanticCandidateLimit)]
-        }
-        if mode == .fastHybrid {
-            arguments.append("--no-rerank")
-        }
+    func search(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String? = nil,
+        limit: Int = 8
+    ) async throws -> [QMDSearchResult] {
+        let arguments = Self.searchArguments(
+            query: query,
+            mode: mode,
+            collection: collection,
+            limit: limit
+        )
         let result = try await run(arguments: arguments)
         try requireSuccess(result)
+        return try Self.decodeSearchResults(from: result.output, command: result.command)
+    }
 
-        guard let start = result.output.firstIndex(of: "["),
-              let end = result.output.lastIndex(of: "]"),
-              start <= end else {
-            throw QMDRunnerError.invalidOutput(command: result.command, detail: "No JSON result array was found.")
+    static func decodeSearchResults(from output: String, command: String) throws -> [QMDSearchResult] {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let decoder = JSONDecoder()
+        var lastDecodeError: Error?
+
+        for start in lines.indices {
+            let firstLine = lines[start].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard firstLine == "[" || (firstLine.hasPrefix("[") && firstLine.hasSuffix("]")) else {
+                continue
+            }
+
+            if firstLine != "[" {
+                do {
+                    return try decoder.decode([QMDSearchResult].self, from: Data(firstLine.utf8))
+                } catch {
+                    lastDecodeError = error
+                }
+                continue
+            }
+
+            for end in start..<lines.count where
+                lines[end].trimmingCharacters(in: .whitespacesAndNewlines) == "]" {
+                let candidate = lines[start...end].joined(separator: "\n")
+                do {
+                    return try decoder.decode([QMDSearchResult].self, from: Data(candidate.utf8))
+                } catch {
+                    lastDecodeError = error
+                }
+            }
         }
 
-        let json = String(result.output[start...end])
-        do {
-            return try JSONDecoder().decode([QMDSearchResult].self, from: Data(json.utf8))
-        } catch {
-            throw QMDRunnerError.invalidOutput(command: result.command, detail: error.localizedDescription)
+        let detail = lastDecodeError?.localizedDescription ?? "No JSON result array was found."
+        throw QMDRunnerError.invalidOutput(command: command, detail: detail)
+    }
+
+    static func searchArguments(
+        query: String,
+        mode: QMDSearchMode,
+        collection: String?,
+        limit: Int
+    ) -> [String] {
+        let effectiveMode = mode.effectiveMode(for: query)
+        let queryArgument = effectiveMode == .fast ? fastQueryDocument(for: query) : query
+        var arguments = [effectiveMode == .keyword ? "search" : "query", queryArgument]
+
+        if effectiveMode != .keyword {
+            arguments += ["--candidate-limit", String(Self.semanticCandidateLimit)]
+            if effectiveMode == .fast {
+                arguments.append("--no-rerank")
+            }
         }
+
+        if let collection = collection?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !collection.isEmpty {
+            arguments += ["-c", collection]
+        }
+
+        arguments += ["--format", "json", "-n", String(limit)]
+        return arguments
+    }
+
+    static func fastQueryDocument(for query: String) -> String {
+        let normalized = query.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return """
+        intent: Find notes relevant to: \(normalized)
+        vec: \(normalized)
+        lex: \(normalized)
+        """
     }
 
     func resolvedFilePath(for result: QMDSearchResult) async throws -> String {

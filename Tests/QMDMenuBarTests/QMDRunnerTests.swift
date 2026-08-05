@@ -96,47 +96,6 @@ final class QMDRunnerTests: XCTestCase {
         XCTAssertEqual(resolvedPath, "/tmp/example.md")
     }
 
-    func testHybridSearchLimitsCandidatesAndFastModeSkipsReranking() async throws {
-        let fixture = try ShellFixture(script: """
-        #!/bin/sh
-        printf '%s\n' "$@" > "$(dirname "$0")/arguments"
-        echo '[]'
-        """)
-        let runner = QMDRunner(preferences: fixture.preferences, lockRetryDelays: [])
-
-        _ = try await runner.search(query: "useful", mode: .keyword)
-        var arguments = try String(
-            contentsOf: fixture.directory.appendingPathComponent("arguments"),
-            encoding: .utf8
-        ).split(separator: "\n").map(String.init)
-        XCTAssertEqual(
-            arguments,
-            ["search", "useful", "--format", "json", "-n", "8"]
-        )
-
-        _ = try await runner.search(query: "useful", mode: .hybrid)
-        arguments = try String(
-            contentsOf: fixture.directory.appendingPathComponent("arguments"),
-            encoding: .utf8
-        ).split(separator: "\n").map(String.init)
-
-        XCTAssertEqual(
-            arguments,
-            ["query", "useful", "--format", "json", "-n", "8", "-C", "16"]
-        )
-
-        _ = try await runner.search(query: "useful", mode: .fastHybrid)
-        arguments = try String(
-            contentsOf: fixture.directory.appendingPathComponent("arguments"),
-            encoding: .utf8
-        ).split(separator: "\n").map(String.init)
-
-        XCTAssertEqual(
-            arguments,
-            ["query", "useful", "--format", "json", "-n", "8", "-C", "16", "--no-rerank"]
-        )
-    }
-
     func testUpdateCachesCollectionCheckUntilFolderLayoutChanges() async throws {
         let fixture = try ShellFixture(script: """
         #!/bin/sh
@@ -235,6 +194,113 @@ final class QMDRunnerTests: XCTestCase {
         }
 
         XCTAssertLessThan(Date().timeIntervalSince(cancelledAt), 2)
+    }
+
+    func testSearchIgnoresBracketedWarningsAroundJSON() async throws {
+        let fixture = try ShellFixture(script: """
+        #!/bin/sh
+        echo '[node-llama-cpp] Metal backend initialized' >&2
+        echo '[{"docid":"#abc123","score":0.9,"file":"qmd://notes/example.md","line":7,"title":"Example","context":"Notes","snippet":"Useful result"}]'
+        echo '[telemetry] query complete' >&2
+        """)
+
+        let results = try await QMDRunner(
+            preferences: fixture.preferences,
+            lockRetryDelays: []
+        ).search(query: "useful", mode: .keyword)
+
+        XCTAssertEqual(results.map(\.displayTitle), ["Example"])
+    }
+
+    func testFastSearchUsesCandidateLimitNoRerankAndCollectionScope() {
+        let arguments = QMDRunner.searchArguments(
+            query: "how do I transfer a file between machines",
+            mode: .fast,
+            collection: "tailscale",
+            limit: 8
+        )
+
+        XCTAssertEqual(
+            arguments,
+            [
+                "query",
+                """
+                intent: Find notes relevant to: how do I transfer a file between machines
+                vec: how do I transfer a file between machines
+                lex: how do I transfer a file between machines
+                """,
+                "--candidate-limit", "16",
+                "--no-rerank",
+                "-c", "tailscale",
+                "--format", "json",
+                "-n", "8",
+            ]
+        )
+    }
+
+    func testFastSearchNormalizesMultilineInputIntoOneStructuredQueryDocument() {
+        let document = QMDRunner.fastQueryDocument(for: "why did this move\nlex: injected")
+
+        XCTAssertEqual(
+            document,
+            """
+            intent: Find notes relevant to: why did this move lex: injected
+            vec: why did this move lex: injected
+            lex: why did this move lex: injected
+            """
+        )
+        XCTAssertEqual(document.split(separator: "\n").count, 3)
+    }
+
+    func testFastSearchRoutesExactCommandToKeywordSearch() {
+        let arguments = QMDRunner.searchArguments(
+            query: "qmd doctor",
+            mode: .fast,
+            collection: "qmd",
+            limit: 5
+        )
+
+        XCTAssertEqual(
+            arguments,
+            [
+                "search", "qmd doctor",
+                "-c", "qmd",
+                "--format", "json",
+                "-n", "5",
+            ]
+        )
+    }
+
+    func testFastSearchRecognizesQuotedPathsAndFilenamesAsExact() {
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("\"External SSD 1\""))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("qmd://tailscale/MEMORY.md"))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("README.md"))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("README.md?"))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("--help"))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("#1751d1"))
+        XCTAssertTrue(QMDSearchMode.prefersKeywordSearch("an unmatched \"quote"))
+        XCTAssertFalse(QMDSearchMode.prefersKeywordSearch("why did the local service move to IPv4"))
+    }
+
+    func testDeepSearchKeepsRerankingEnabled() {
+        let arguments = QMDRunner.searchArguments(
+            query: "why was the local service moved to IPv4 loopback",
+            mode: .deep,
+            collection: nil,
+            limit: 8
+        )
+
+        XCTAssertEqual(
+            arguments,
+            [
+                "query",
+                "why was the local service moved to IPv4 loopback",
+                "--candidate-limit", "16",
+                "--format", "json",
+                "-n", "8",
+            ]
+        )
+        XCTAssertFalse(arguments.contains("--no-rerank"))
     }
 
     func testCollectionPlanFindsAddsReplacementsAndManagedRemovals() async throws {

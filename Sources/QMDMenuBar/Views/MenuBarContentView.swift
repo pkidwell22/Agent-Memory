@@ -108,8 +108,12 @@ private struct SearchView: View {
                 .onSubmit { store.performSearch() }
                 .help("Press Return to search")
 
-            SearchModeSelector(store: store)
-                .frame(maxWidth: .infinity)
+            HStack(spacing: 8) {
+                SearchModeSelector(store: store)
+                    .frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
+                SearchCollectionSelector(store: store)
+            }
 
             if let error = store.searchError {
                 Text(error)
@@ -169,6 +173,46 @@ private struct SearchModeSelector: View {
                 .help(mode.help)
             }
         }
+    }
+}
+
+private struct SearchCollectionSelector: View {
+    let store: QMDStore
+
+    var body: some View {
+        Menu {
+            Button("All Collections") {
+                store.searchCollection = nil
+            }
+
+            if !store.searchableCollections.isEmpty {
+                Divider()
+            }
+
+            ForEach(store.searchableCollections) { collection in
+                Button {
+                    store.searchCollection = collection.name
+                } label: {
+                    if let files = collection.files {
+                        Text("\(collection.name) (\(files))")
+                    } else {
+                        Text(collection.name)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "folder")
+                Text(store.searchScopeTitle)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .frame(maxWidth: 126, alignment: .trailing)
+        }
+        .menuStyle(.borderlessButton)
+        .help("Limit search to one QMD collection")
+        .accessibilityLabel("Search collection")
+        .accessibilityValue(store.searchScopeTitle)
     }
 }
 
